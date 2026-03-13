@@ -75,6 +75,7 @@ KernelState::KernelState(Emulator* emulator)
   xam_state_ = std::make_unique<xam::XamState>(emulator, this);
   guest_scheduler_ = std::make_unique<GuestScheduler>(this);
   smc_ = std::make_unique<SystemManagementController>();
+  nui_ = std::make_unique<NUIController>();
 
   InitializeKernelGuestGlobals();
   kernel_version_ = KernelVersion(cvars::kernel_build_version);

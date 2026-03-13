@@ -24,6 +24,7 @@
 #include "xenia/cpu/export_resolver.h"
 #include "xenia/kernel/guest_scheduler.h"
 #include "xenia/kernel/kernel.h"
+#include "xenia/kernel/nui.h"
 #include "xenia/kernel/smc.h"
 #include "xenia/kernel/util/kernel_fwd.h"
 #include "xenia/kernel/util/native_list.h"
@@ -203,6 +204,8 @@ class KernelState {
                      bool alertable = false);
 
   SystemManagementController* smc() const { return smc_.get(); }
+
+  NUIController* nui() const { return nui_.get(); }
 
   xam::AchievementManager* achievement_manager() const {
     return xam_state()->achievement_manager();
@@ -423,6 +426,7 @@ class KernelState {
   std::unique_ptr<SystemManagementController> smc_;
   std::unique_ptr<XmpVolumePatch> xmp_volume_patch_;
   std::unique_ptr<XConfig> xconfig_;
+  std::unique_ptr<NUIController> nui_;
 
   KernelVersion kernel_version_;
 
