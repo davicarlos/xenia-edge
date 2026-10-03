@@ -259,7 +259,10 @@ void XboxkrnlModule::RegisterExportTable(
   export_resolver->RegisterTable("xboxkrnl.exe", &xboxkrnl_exports);
 }
 
-XboxkrnlModule::~XboxkrnlModule() { xeMmForgetSegmentArrays(); }
+XboxkrnlModule::~XboxkrnlModule() {
+  ShutdownCameraDevice();
+  xeMmForgetSegmentArrays();
+}
 
 }  // namespace xboxkrnl
 }  // namespace kernel
