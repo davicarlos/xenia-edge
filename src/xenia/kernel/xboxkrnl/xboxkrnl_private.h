@@ -10,6 +10,9 @@
 #ifndef XENIA_KERNEL_XBOXKRNL_XBOXKRNL_PRIVATE_H_
 #define XENIA_KERNEL_XBOXKRNL_XBOXKRNL_PRIVATE_H_
 
+#include <cstdint>
+#include <vector>
+
 #include "xenia/cpu/export_resolver.h"
 #include "xenia/kernel/kernel_state.h"
 #include "xenia/kernel/xboxkrnl/xboxkrnl_ordinals.h"
@@ -30,6 +33,14 @@ xe::cpu::Export* RegisterExport_xboxkrnl(xe::cpu::Export* export_entry);
 // Stops the camera worker and releases a host camera opened for
 // PsCamDeviceRequest.
 void ShutdownCameraDevice();
+
+// Copies the newest Kinect frames (packed 11-bit depth, 640x480 Bayer color)
+// if they are newer than the sequence numbers, which are updated, opening the
+// camera if allowed and not open yet. False without a camera.
+bool CopyKinectCameraPreview(uint32_t& depth_sequence,
+                             std::vector<uint8_t>& packed_depth,
+                             uint32_t& color_sequence,
+                             std::vector<uint8_t>& bayer);
 
 }  // namespace xboxkrnl
 }  // namespace kernel

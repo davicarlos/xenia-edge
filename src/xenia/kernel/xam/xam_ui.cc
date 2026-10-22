@@ -31,6 +31,7 @@
 #include "xenia/kernel/xam/ui/disc_swap_ui.h"
 #include "xenia/kernel/xam/ui/game_achievements_ui.h"
 #include "xenia/kernel/xam/ui/gamercard_ui.h"
+#include "xenia/kernel/xam/ui/kinect_tuner_ui.h"
 #include "xenia/kernel/xam/ui/passcode_ui.h"
 #include "xenia/kernel/xam/ui/signin_ui.h"
 #include "xenia/kernel/xam/ui/title_info_ui.h"
@@ -1231,21 +1232,19 @@ dword_result_t XamShowNuiTroubleshooterUI_entry(dword_t user_index,
   */
 
   // This is the Kinect Tuner: titles open it on request (Y in 4D5308C9's
-  // menus) as well as when the sensor reports a problem. There is no tuner
-  // here, so say so without holding the title, which waits for the UI to
-  // close on its calling thread.
-  XELOGW("XamShowNuiTroubleshooterUI({}, {:08X}, {:08X}): no Kinect Tuner",
+  // menus) as well as when the sensor reports a problem. It's shown without
+  // holding the title, which would wait for it on its calling thread.
+  XELOGI("XamShowNuiTroubleshooterUI({}, {:08X}, {:08X}): Kinect Tuner",
          uint32_t(user_index), uint32_t(tracking_id), uint32_t(flags));
   const Emulator* emulator = kernel_state()->emulator();
   xe::ui::Window* display_window = emulator->display_window();
   xe::ui::ImGuiDrawer* imgui_drawer = emulator->imgui_drawer();
+  xe::hid::InputSystem* input_system = emulator->input_system();
   if (display_window && imgui_drawer) {
-    display_window->app_context().CallInUIThread([imgui_drawer]() {
-      xe::ui::ImGuiDialog::ShowMessageBox(
-          imgui_drawer, "Kinect Tuner",
-          "The Kinect Tuner isn't available in Xenia. The sensor is used as "
-          "it is.");
-    });
+    display_window->app_context().CallInUIThread(
+        [imgui_drawer, input_system]() {
+          new ui::KinectTunerUI(imgui_drawer, input_system);
+        });
   }
   return X_ERROR_SUCCESS;
 }

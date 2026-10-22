@@ -322,6 +322,23 @@ class CameraDevice {
     return completion ? X_STATUS_PENDING : status;
   }
 
+  // For the Kinect Tuner: the newest frames, if newer than the sequence
+  // numbers given, which are updated. False without a camera.
+  bool CopyPreview(uint32_t& depth_sequence, std::vector<uint8_t>& packed_depth,
+                   uint32_t& color_sequence, std::vector<uint8_t>& bayer) {
+    if (!camera_) {
+      return false;
+    }
+    if (uint32_t sequence = camera_->CopyDepthFrame(depth_sequence,
+                                                    packed_depth)) {
+      depth_sequence = sequence;
+    }
+    if (uint32_t sequence = camera_->CopyColorFrame(color_sequence, bayer)) {
+      color_sequence = sequence;
+    }
+    return true;
+  }
+
  private:
   template <typename T>
   T* Guest(uint32_t address) const {
@@ -704,6 +721,14 @@ void ShutdownCameraDevice() {
   }
   // Destroyed unlocked, as its worker may still be completing a request.
   camera_device.reset();
+}
+
+bool CopyKinectCameraPreview(uint32_t& depth_sequence,
+                             std::vector<uint8_t>& packed_depth,
+                             uint32_t& color_sequence,
+                             std::vector<uint8_t>& bayer) {
+  return GetCameraDevice()->CopyPreview(depth_sequence, packed_depth,
+                                        color_sequence, bayer);
 }
 
 dword_result_t PsCamDeviceRequest_entry(dword_t request_ptr) {
