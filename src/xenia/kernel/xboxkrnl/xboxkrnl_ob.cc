@@ -308,9 +308,37 @@ DECLARE_XBOXKRNL_EXPORT1(ObOpenObjectByName, kNone, kImplemented);
 dword_result_t ObOpenObjectByPointer_entry(lpvoid_t object_ptr,
                                            lpdword_t out_handle_ptr) {
   *out_handle_ptr = 0;
+  const uint32_t body = object_ptr.guest_address();
+
+  // An object of a title-defined type (ObCreateObject) keeps its type so that
+  // ObReferenceObjectByHandle can check it; 5345084D looks up its Kinect camera
+  // image streams by handle with their type for every frame.
+  if (auto guest_object = XGuestObject::FromBody(body)) {
+    guest_object->RetainHandle();
+    *out_handle_ptr = guest_object->handle();
+    return X_STATUS_SUCCESS;
+  }
+
   auto object = XObject::GetNativeObject<XObject>(kernel_state(), object_ptr);
   if (!object) {
-    return X_STATUS_UNSUCCESSFUL;
+    // Not a dispatcher object: a body ObCreateObject allocated with an
+    // X_OBJECT_HEADER in front, never inserted. Give it a handle the way
+    // ObInsertObject does, keeping the pointer reference the title holds.
+    if (body < sizeof(X_OBJECT_HEADER) ||
+        !kernel_memory()->LookupHeap(body - uint32_t(sizeof(X_OBJECT_HEADER)))) {
+      return X_STATUS_UNSUCCESSFUL;
+    }
+    auto header = kernel_memory()->TranslateVirtual<X_OBJECT_HEADER*>(
+        body - uint32_t(sizeof(X_OBJECT_HEADER)));
+    const uint32_t type_ptr = header->object_type_ptr;
+    if (!type_ptr || !kernel_memory()->LookupHeap(type_ptr)) {
+      return X_STATUS_UNSUCCESSFUL;
+    }
+    auto guest_object = object_ref<XGuestObject>(
+        new XGuestObject(kernel_state(), body, type_ptr));
+    guest_object->RetainHandle();
+    *out_handle_ptr = guest_object->handle();
+    return X_STATUS_SUCCESS;
   }
 
   // Keep the guest type for ObReferenceObjectByHandle.
