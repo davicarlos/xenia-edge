@@ -200,6 +200,13 @@ void ProvideResolveOutput(uint32_t address, uint32_t length, bool write) {
     uint32_t owner_first_page = owner.address >> 12;
     uint32_t owner_last_page = std::min((owner_end - 1) >> 12, page_count - 1);
     if (owner.submission > submitted) {
+      if (cvars::log_resolve_readback) {
+        XELOGI(
+            "Resolve readback: {} of {:08X}+{:X} before submission {} of "
+            "{:08X}+{:X} reached the GPU (through {}), deferred",
+            write ? "write" : "read", address, length, owner.submission,
+            owner.address, owner.length, submitted);
+      }
       if (write) {
         ClipResolveEdgePagesWritten(owner, owner_first_page, owner_last_page,
                                     first_page, last_page);
@@ -243,7 +250,17 @@ void ProvideResolveOutput(uint32_t address, uint32_t length, bool write) {
     }
     if (FaultCopyResolveToGuestRam(resolve_fault_copy_ranges_)) {
       owner.in_guest_ram = true;
+      if (cvars::log_resolve_readback) {
+        XELOGI("Resolve readback: {} of {:08X}+{:X} copied {:08X}+{:X} ({} "
+               "ranges) into guest RAM",
+               write ? "write" : "read", address, length, owner.address,
+               owner.length, resolve_fault_copy_ranges_.size());
+      }
     } else {
+      if (cvars::log_resolve_readback) {
+        XELOGW("Resolve readback: copy of {:08X}+{:X} failed", owner.address,
+               owner.length);
+      }
       if (write) {
         ClipResolveEdgePagesWritten(owner, owner_first_page, owner_last_page,
                                     first_page, last_page);
@@ -288,6 +305,11 @@ void NoteResolveForReadback(uint32_t address, uint32_t length, bool is_scaled) {
   }
   uint64_t resolve_key = MakeReadbackResolveKey(address, length);
   bool read_before = TakeResolveRead(resolve_key);
+  if (cvars::log_resolve_readback) {
+    XELOGI("Resolve readback: noted {:08X}+{:X} in submission {}{}{}", address,
+           length, GetCurrentSubmission(), is_scaled ? ", scaled" : "",
+           read_before ? ", read before" : "");
+  }
   // A later read is of this resolve's output, not what it replaces.
   SetResolvePageOwner(address, length, resolve_key);
   {
