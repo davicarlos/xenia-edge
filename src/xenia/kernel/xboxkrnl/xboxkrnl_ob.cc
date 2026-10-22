@@ -34,6 +34,31 @@ struct PendingGuestObjectDelete {
 static thread_local std::vector<PendingGuestObjectDelete>
     pending_guest_object_deletes;
 
+// Bodies ObCreateObject allocated, with their type, until a handle is made
+// for them by ObInsertObject or ObOpenObjectByPointer. A body may start with
+// a dispatcher object of its own (4D5308C9's Kinect camera streams hold a
+// KEVENT), so the X_OBJECT_HEADER type, not the dispatcher type, says what
+// the handle refers to.
+static std::unordered_map<uint32_t, uint32_t> created_guest_object_types;
+
+static void RememberCreatedGuestObject(uint32_t body, uint32_t type_ptr) {
+  auto global_lock = global_critical_region::AcquireDirect();
+  created_guest_object_types[body] = type_ptr;
+}
+
+// Returns the type of a body ObCreateObject made, 0 for any other, and
+// forgets it.
+static uint32_t TakeCreatedGuestObjectType(uint32_t body) {
+  auto global_lock = global_critical_region::AcquireDirect();
+  auto it = created_guest_object_types.find(body);
+  if (it == created_guest_object_types.end()) {
+    return 0;
+  }
+  const uint32_t type_ptr = it->second;
+  created_guest_object_types.erase(it);
+  return type_ptr;
+}
+
 // An object of a type the title defines itself, which has no dispatch header
 // for a host object to keep its handle in. The handle table only names it.
 // TODO(has207): NtClose doesn't call the type's close procedure. It takes the
@@ -197,6 +222,8 @@ uint32_t xeObCreateObject(X_OBJECT_TYPE* object_factory,
       new_object_header->flags = resulting_header_flags;
 
       *out_object = allocation + sizeof(X_OBJECT_HEADER);
+      RememberCreatedGuestObject(*out_object,
+                                 context->HostToGuestVirtual(object_factory));
       return X_STATUS_SUCCESS;
     }
     return X_STATUS_INSUFFICIENT_RESOURCES;
@@ -270,6 +297,8 @@ uint32_t xeObCreateObject(X_OBJECT_TYPE* object_factory,
   header_for_named_object->flags =
       resulting_header_flags & 0xFFFE | OBJECT_HEADER_FLAG_NAMED_OBJECT;
   *out_object = context->HostToGuestVirtual(&header_for_named_object[1]);
+  RememberCreatedGuestObject(*out_object,
+                             context->HostToGuestVirtual(object_factory));
   return X_STATUS_SUCCESS;
 }
 dword_result_t ObOpenObjectByName_entry(lpunknown_t obj_attributes_ptr,
@@ -318,27 +347,19 @@ dword_result_t ObOpenObjectByPointer_entry(lpvoid_t object_ptr,
     *out_handle_ptr = guest_object->handle();
     return X_STATUS_SUCCESS;
   }
-
-  auto object = XObject::GetNativeObject<XObject>(kernel_state(), object_ptr);
-  if (!object) {
-    // Not a dispatcher object: a body ObCreateObject allocated with an
-    // X_OBJECT_HEADER in front, never inserted. Give it a handle the way
-    // ObInsertObject does, keeping the pointer reference the title holds.
-    if (body < sizeof(X_OBJECT_HEADER) ||
-        !kernel_memory()->LookupHeap(body - uint32_t(sizeof(X_OBJECT_HEADER)))) {
-      return X_STATUS_UNSUCCESSFUL;
-    }
-    auto header = kernel_memory()->TranslateVirtual<X_OBJECT_HEADER*>(
-        body - uint32_t(sizeof(X_OBJECT_HEADER)));
-    const uint32_t type_ptr = header->object_type_ptr;
-    if (!type_ptr || !kernel_memory()->LookupHeap(type_ptr)) {
-      return X_STATUS_UNSUCCESSFUL;
-    }
+  if (const uint32_t type_ptr = TakeCreatedGuestObjectType(body)) {
+    // A body ObCreateObject allocated, never inserted: give it a handle the
+    // way ObInsertObject does, keeping the pointer reference the title holds.
     auto guest_object = object_ref<XGuestObject>(
         new XGuestObject(kernel_state(), body, type_ptr));
     guest_object->RetainHandle();
     *out_handle_ptr = guest_object->handle();
     return X_STATUS_SUCCESS;
+  }
+
+  auto object = XObject::GetNativeObject<XObject>(kernel_state(), object_ptr);
+  if (!object) {
+    return X_STATUS_UNSUCCESSFUL;
   }
 
   // Keep the guest type for ObReferenceObjectByHandle.
@@ -624,6 +645,7 @@ dword_result_t ObInsertObject_entry(dword_t object,
   }
   auto header = kernel_memory()->TranslateVirtual<X_OBJECT_HEADER*>(
       object - uint32_t(sizeof(X_OBJECT_HEADER)));
+  TakeCreatedGuestObjectType(object);
   // The creation reference passes to the handle and the caller gets
   // |pointer_bias| more, which it later drops with ObDereferenceObject.
   auto guest_object = object_ref<XGuestObject>(
