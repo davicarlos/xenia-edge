@@ -1230,23 +1230,23 @@ dword_result_t XamShowNuiTroubleshooterUI_entry(dword_t user_index,
      XamShowNuiTroubleshooterUI(0xff,0,0) if param = -0x7ff8fffe
   */
 
+  // This is the Kinect Tuner: titles open it on request (Y in 4D5308C9's
+  // menus) as well as when the sensor reports a problem. There is no tuner
+  // here, so say so without holding the title, which waits for the UI to
+  // close on its calling thread.
+  XELOGW("XamShowNuiTroubleshooterUI({}, {:08X}, {:08X}): no Kinect Tuner",
+         uint32_t(user_index), uint32_t(tracking_id), uint32_t(flags));
   const Emulator* emulator = kernel_state()->emulator();
   xe::ui::Window* display_window = emulator->display_window();
   xe::ui::ImGuiDrawer* imgui_drawer = emulator->imgui_drawer();
   if (display_window && imgui_drawer) {
-    xe::threading::Fence fence;
-    if (display_window->app_context().CallInUIThreadSynchronous([&]() {
-          xe::ui::ImGuiDialog::ShowMessageBox(
-              imgui_drawer, "NUI Troubleshooter",
-              "The game has indicated there is a problem with NUI (Kinect).")
-              ->Then(&fence);
-        })) {
-      kernel_state()->xam_state()->is_xam_dialog_present_.store(true);
-      GuestScheduler::WaitOnFence(fence);
-      kernel_state()->xam_state()->is_xam_dialog_present_.store(false);
-    }
+    display_window->app_context().CallInUIThread([imgui_drawer]() {
+      xe::ui::ImGuiDialog::ShowMessageBox(
+          imgui_drawer, "Kinect Tuner",
+          "The Kinect Tuner isn't available in Xenia. The sensor is used as "
+          "it is.");
+    });
   }
-
   return X_ERROR_SUCCESS;
 }
 DECLARE_XAM_EXPORT1(XamShowNuiTroubleshooterUI, kNone, kStub);
