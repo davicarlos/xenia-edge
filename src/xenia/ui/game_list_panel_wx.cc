@@ -14,6 +14,7 @@
 #include <cmath>
 #include <cstring>
 #include <ctime>
+#include <iterator>
 #include <unordered_map>
 
 #include <wx/button.h>
@@ -33,8 +34,10 @@
 #include "xenia/app/game_compat_db.h"
 #include "xenia/base/chrono.h"
 #include "xenia/base/chrono_steady_cast.h"
+#include "xenia/base/cvar.h"
 #include "xenia/base/filesystem.h"
 #include "xenia/base/logging.h"
+#include "xenia/config.h"
 #include "xenia/emulator.h"
 #include "xenia/kernel/kernel_state.h"
 #include "xenia/kernel/xam/profile_manager.h"
@@ -44,10 +47,22 @@
 #include "xenia/ui/compat_display_wx.h"
 #include "xenia/ui/icon_decode.h"
 
+DEFINE_string(game_list_sort, "last_played",
+              "Order of the game list: last_played, title or status. Updated "
+              "by the list's sort picker.",
+              "UI");
+DEFINE_bool(game_list_sort_descending, true,
+            "Whether the game list is in descending order. Updated by the "
+            "list's sort direction button.",
+            "UI");
+
 namespace xe {
 namespace app {
 
 namespace {
+
+// Names of the sort keys in the game_list_sort cvar, in SortKey order.
+constexpr const char* kSortKeyNames[] = {"last_played", "title", "status"};
 
 // Card art edge in logical DIPs at 96 DPI; the constructor converts to device
 // pixels via FromDIP() for the current monitor. Stored art is 64x64, so this
@@ -119,11 +134,20 @@ GameListPanel::GameListPanel(wxWindow* parent, EmulatorWindow* emulator_window)
     search_->SetFont(f);
   }
 
+  // The order the user last picked, from the config.
+  for (size_t i = 0; i < std::size(kSortKeyNames); ++i) {
+    if (cvars::game_list_sort == kSortKeyNames[i]) {
+      sort_key_ = static_cast<SortKey>(i);
+      break;
+    }
+  }
+  sort_descending_ = cvars::game_list_sort_descending;
+
   sort_choice_ = new wxChoice(list_side_, wxID_ANY);
   sort_choice_->Append(_("Last Played"));
   sort_choice_->Append(_("Title"));
   sort_choice_->Append(_("Status"));
-  sort_choice_->SetSelection(0);
+  sort_choice_->SetSelection(static_cast<int>(sort_key_));
   sort_dir_button_ =
       new wxButton(list_side_, wxID_ANY, SortArrow(sort_descending_),
                    wxDefaultPosition, wxDefaultSize, wxBU_EXACTFIT);
@@ -740,6 +764,12 @@ void GameListPanel::SortEntries() {
 void GameListPanel::OnSortChanged() {
   sort_dir_button_->SetLabel(SortArrow(sort_descending_));
   Repopulate();
+
+  // Keep the order across sessions.
+  OVERRIDE_PERSIST_string(game_list_sort,
+                          kSortKeyNames[static_cast<size_t>(sort_key_)]);
+  OVERRIDE_PERSIST_bool(game_list_sort_descending, sort_descending_);
+  config::SaveConfig();
 }
 
 void GameListPanel::Repopulate() {
