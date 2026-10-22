@@ -1737,10 +1737,10 @@ void EmulatorWindow::ExportScreenshot(const xe::ui::RawImage& image) {
     return;
   }
 
-  // Find where xenia.exe or xenia_edge.exe is located and create a
-  // screenshots folder
+  // Screenshots go in the storage root, which survives replacing the
+  // executable.
   auto screenshot_path =
-      (xe::filesystem::GetExecutableFolder() / "screenshots" / title_id);
+      emulator()->storage_root() / "screenshots" / title_id;
 
   if (!std::filesystem::exists(screenshot_path)) {
     std::filesystem::create_directories(screenshot_path);

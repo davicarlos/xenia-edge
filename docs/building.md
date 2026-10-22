@@ -107,8 +107,10 @@ and set the 'Command' to `$(SolutionDir)$(TargetPath)` and the
 'Working Directory' to `$(SolutionDir)..\..`. You can specify flags and
 the file to run in the 'Command Arguments' field (or use `--flagfile=flags.txt`).
 
-By default logs are written to xenia.log. You can
-override this with `--log_file=log.txt`.
+By default logs are written to xenia.log in the storage root (the folder
+holding the config file; the executable's folder in portable mode). You can
+override this with `--log_file=log.txt` or `log_file` in the config, where a
+relative path is taken from the storage root.
 
 If running under Visual Studio and you want to look at the JIT'ed code
 (available around 0xA0000000) you should pass `--emit_source_annotations` to

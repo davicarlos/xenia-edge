@@ -74,8 +74,19 @@ class DebugPrintLogSink final : public LogSink {
 };
 
 // Initializes the logging system and any outputs requested.
-// Must be called on startup.
-void InitializeLogging(const std::string_view app_name);
+// Must be called on startup. With defer_log_file the lines meant for the log
+// file are held in memory until SetLogFile, so an app can place the file once
+// it knows its storage root and has read its config (--log_file from the
+// config can't be seen before that).
+void InitializeLogging(const std::string_view app_name,
+                       bool defer_log_file = false);
+// Opens the log file at the given path and writes the held lines to it.
+// Truncates the file unless --log_append is set (a process started by a
+// running xenia appends to the session's log).
+void SetLogFile(const std::filesystem::path& path);
+// Opens the log file next to the executable, as InitializeLogging without
+// defer_log_file would, when the app hasn't chosen one with SetLogFile.
+void EnsureLogFile();
 void ShutdownLogging();
 void FlushLog();
 

@@ -62,14 +62,16 @@ bool XeniaWxApp::OnInit() {
                                      app_->GetPositionalOptions(), nullptr)) {
     return false;
   }
-  xe::InitializeWin32App(app_->GetName());
+  // The app places the log file once it knows its storage root.
+  xe::InitializeWin32App(app_->GetName(), true);
   if (cvars::enable_console) {
     xe::AttachConsole();
   }
 #else
   cvar::ParseLaunchArguments(g_argc, g_argv, app_->GetPositionalOptionsUsage(),
                              app_->GetPositionalOptions());
-  xe::InitializeLogging(app_->GetName());
+  // The app places the log file once it knows its storage root.
+  xe::InitializeLogging(app_->GetName(), true);
 #endif
 
   wxInitAllImageHandlers();
@@ -93,7 +95,10 @@ bool XeniaWxApp::OnInit() {
   SetAppName(wxString::FromUTF8(id));
   SetVendorName(wxString::FromUTF8(app_->GetName()));
 
-  if (!app_->OnInitialize()) {
+  bool initialized = app_->OnInitialize();
+  // Apps without a storage root (demos, tools) log next to the executable.
+  xe::EnsureLogFile();
+  if (!initialized) {
     return false;
   }
 

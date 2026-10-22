@@ -120,9 +120,9 @@ bool ParseWin32LaunchArguments(
   return true;
 }
 
-int InitializeWin32App(const std::string_view app_name) {
+int InitializeWin32App(const std::string_view app_name, bool defer_log_file) {
   // Initialize logging. Needs parsed FLAGS.
-  xe::InitializeLogging(app_name);
+  xe::InitializeLogging(app_name, defer_log_file);
 
   // Print version info.
   XELOGI(

@@ -103,6 +103,9 @@ DEFINE_transient_bool(portable, false,
                       "General");
 
 DECLARE_bool(debug);
+#if !XE_PLATFORM_ANDROID
+DECLARE_path(log_file);
+#endif  // !XE_PLATFORM_ANDROID
 DEFINE_int32(
     gdbport, 0,
     "Port for GDBStub debugger to listen on, requires --debug (0 = disable)",
@@ -548,6 +551,19 @@ bool EmulatorApp::OnInitialize() {
   XELOGI("Storage root: {}", xe::strip_pii(xe::path_to_utf8(storage_root)));
 
   config::SetupConfig(storage_root);
+
+#if !XE_PLATFORM_ANDROID
+  // The log goes in the storage root, which survives replacing the
+  // executable, unless the config names a file (relative to the storage root).
+  // Must follow SetupConfig so cvars::log_file from the TOML is visible.
+  std::filesystem::path log_file = cvars::log_file;
+  if (log_file.empty()) {
+    log_file = storage_root / fmt::format("{}.log", GetName());
+  } else if (!log_file.is_absolute()) {
+    log_file = storage_root / log_file;
+  }
+  xe::SetLogFile(log_file);
+#endif  // !XE_PLATFORM_ANDROID
 
   // Must follow SetupConfig so cvars::ui_locale from the TOML is visible.
   xe::ui::InitializeWxLocale();
