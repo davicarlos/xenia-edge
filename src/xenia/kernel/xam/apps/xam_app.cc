@@ -223,6 +223,47 @@ X_HRESULT XamApp::DispatchMessageSync(uint32_t message, uint32_t buffer_ptr,
       XELOGD("XNuiTitleShutdown stubbed");
       return X_E_SUCCESS;
     }
+    case 0x0002B002: {
+      // The NUI runtime publishes each skeleton frame it fits to xam's HUD:
+      // 0xAE0 bytes with the runtime version, the floor plane, six
+      // NUI_SKELETON_DATA and the frame's timestamp. Nothing consumes it yet.
+      return X_E_SUCCESS;
+    }
+    case 0x0002A004:
+    case 0x0002A005:
+    case 0x0002A006:
+    case 0x0002A007:
+    case 0x0002A008: {
+      // Identity and biometric profile data requests, 24 bytes each, sent
+      // with XMsgStartIORequest and no overlapped during the runtime's
+      // identity initialization (0x2A005, 0x2A006) and for each signed-in
+      // profile (0x2A008 asks whether xam holds the profile's biometric data,
+      // 0x2A007 hands xam the runtime's copy). What xam does with them isn't
+      // known; the runtime only needs them to succeed, and a stamp left at 0
+      // by 0x2A008 tells it xam holds nothing.
+      XELOGD("XamApp: NUI identity I/O request {:08X} ({} bytes)", message,
+             buffer_length);
+      return X_E_SUCCESS;
+    }
+    case 0x0002C00C: {
+      // Registers one identity feature (classifier): {version, flags,
+      // reserved, unk, name pointer, name length, ...}. The runtime registers
+      // about twenty, named like NuiV1FaceHiRes, during its identity
+      // initialization and needs each to succeed.
+      if (!buffer_ptr) {
+        return X_E_INVALIDARG;
+      }
+      const uint32_t name_ptr = xe::load_and_swap<uint32_t>(buffer + 16);
+      const uint32_t name_length = xe::load_and_swap<uint32_t>(buffer + 20);
+      std::string_view name;
+      if (name_ptr && name_length && name_length < 256) {
+        name = std::string_view(memory_->TranslateVirtual<const char*>(name_ptr),
+                                name_length);
+      }
+      XELOGD("XamApp: NUI identity feature registered: {} (flags {:08X})", name,
+             xe::load_and_swap<uint32_t>(buffer + 4));
+      return X_E_SUCCESS;
+    }
     case 0x0002C009: {
       // Registers (non-zero) or removes (zero) a Kinect identity callback.
       // TODO(knuckleslee): Invoke the callback for identity notifications.
