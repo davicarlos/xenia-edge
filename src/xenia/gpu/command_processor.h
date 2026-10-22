@@ -10,6 +10,7 @@
 #ifndef XENIA_GPU_COMMAND_PROCESSOR_H_
 #define XENIA_GPU_COMMAND_PROCESSOR_H_
 
+#include "xenia/base/cvar.h"
 #include <array>
 #include <atomic>
 #include <chrono>
@@ -33,6 +34,8 @@
 #include "xenia/kernel/xthread.h"
 #include "xenia/memory.h"
 #include "xenia/ui/presenter.h"
+
+DECLARE_bool(log_resolve_readback);
 
 namespace xe {
 
