@@ -7,6 +7,8 @@
  ******************************************************************************
  */
 
+#include <cstring>
+
 #include "xenia/base/logging.h"
 #include "xenia/emulator.h"
 #include "xenia/kernel/kernel_state.h"
@@ -143,10 +145,23 @@ dword_result_t XamNuiCameraTiltGetStatus_entry(
       tilt_status->signature != make_fourcc("XtSs")) {
     return X_E_FAIL;
   }
-  // TODO(knuckleslee): Report the Kinect accelerometer and motor status.
-  return X_E_FAIL;
+  if (!kernel_state()->nui()->NuiInitialized()) {
+    return X_E_DEVICE_NOT_CONNECTED;
+  }
+  // A level, stationary camera: the up direction in the Kinect accelerometer
+  // units libfreenect uses (1 g is about 819), and no movement flags.
+  // TODO(knuckleslee): Read the accelerometer and motor through the Kinect
+  // motor device (DetroitDeviceRequest).
+  constexpr int32_t kAccelerometerOneG = 819;
+  std::memset(tilt_status->unknown_08, 0, sizeof(tilt_status->unknown_08));
+  tilt_status->gravity_long_avg[0] = 0;
+  tilt_status->gravity_long_avg[1] = kAccelerometerOneG;
+  tilt_status->gravity_long_avg[2] = 0;
+  tilt_status->flags = X_TILT_STATUS_FLAGS(0);
+  std::memset(tilt_status->unknown_30, 0, sizeof(tilt_status->unknown_30));
+  return X_ERROR_SUCCESS;
 }
-DECLARE_XAM_EXPORT1(XamNuiCameraTiltGetStatus, kNone, kStub);
+DECLARE_XAM_EXPORT1(XamNuiCameraTiltGetStatus, kNone, kSketchy);
 
 dword_result_t XamNuiCameraElevationGetAngle_entry(lpdword_t elevation_angle,
                                                    lpdword_t camera_moving) {
