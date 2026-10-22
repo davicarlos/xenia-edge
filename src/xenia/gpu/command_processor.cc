@@ -110,6 +110,11 @@ DEFINE_bool(
     "RAM without it, which breaks games that read it back.",
     "GPU");
 
+DEFINE_bool(log_resolve_readback, false,
+            "Log every resolve noted for readback into guest RAM, and every "
+            "copy a CPU access of its destination makes or defers.",
+            "GPU.Debug");
+
 DEFINE_bool(
     memexport_enable, true,
     "Make memory export output visible to the CPU. Needed by games that read "
