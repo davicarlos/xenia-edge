@@ -11,8 +11,11 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cctype>
 #include <cstdlib>
 #include <cstring>
+#include <string>
+#include <vector>
 
 #include "third_party/disruptorplus/include/disruptorplus/multi_threaded_claim_strategy.hpp"
 #include "third_party/disruptorplus/include/disruptorplus/ring_buffer.hpp"
@@ -60,6 +63,11 @@ DEFINE_bool(log_to_debugprint, false, "Dump the log to DebugPrint.", "Logging");
 #endif  // XE_PLATFORM_ANDROID
 DEFINE_bool(flush_log, true, "Flush log file after each log line batch.",
             "Logging");
+DEFINE_bool(log_user_paths, false,
+            "Write paths under the home folder to the log as they are. "
+            "Otherwise the folder is logged as ~, so a log can be shared "
+            "without the user name in it.",
+            "Logging");
 
 DEFINE_uint32(log_mask, 0,
               "Disables specific categorizes for more granular debug logging. "
@@ -95,6 +103,80 @@ struct LogLine {
 };
 
 thread_local char thread_log_buffer_[64_KiB];
+
+// Spellings of the home folder that log lines replace with ~: as the system
+// gives it and, on Windows, with forward slashes, as paths are logged both
+// ways. Set before the write thread starts.
+std::vector<std::string> home_folder_spellings_;
+
+std::vector<std::string> HomeFolderSpellings() {
+  std::vector<std::string> spellings;
+#if XE_PLATFORM_WIN32
+  const wchar_t* profile = _wgetenv(L"USERPROFILE");
+  std::string home =
+      profile ? xe::path_to_utf8(std::filesystem::path(profile)) : "";
+#else
+  const char* env_home = std::getenv("HOME");
+  std::string home = env_home ? env_home : "";
+#endif  // XE_PLATFORM_WIN32
+  while (!home.empty() && (home.back() == '/' || home.back() == '\\')) {
+    home.pop_back();
+  }
+  // A root folder would blank out every path.
+  if (home.size() < 4) {
+    return spellings;
+  }
+  spellings.push_back(home);
+#if XE_PLATFORM_WIN32
+  std::string with_slashes = home;
+  std::replace(with_slashes.begin(), with_slashes.end(), '\\', '/');
+  if (with_slashes != home) {
+    spellings.push_back(with_slashes);
+  }
+#endif  // XE_PLATFORM_WIN32
+  return spellings;
+}
+
+// Whether the line names the folder at pos: the folder's characters follow
+// (case-insensitively on Windows) and the path doesn't go on in the same
+// name, as /home/user2 isn't /home/user.
+bool NamesFolderAt(const std::string& line, size_t pos,
+                   const std::string& folder) {
+  if (pos + folder.size() > line.size()) {
+    return false;
+  }
+  for (size_t i = 0; i < folder.size(); ++i) {
+    char a = line[pos + i];
+    char b = folder[i];
+#if XE_PLATFORM_WIN32
+    a = static_cast<char>(std::tolower(static_cast<unsigned char>(a)));
+    b = static_cast<char>(std::tolower(static_cast<unsigned char>(b)));
+#endif  // XE_PLATFORM_WIN32
+    if (a != b) {
+      return false;
+    }
+  }
+  if (pos + folder.size() == line.size()) {
+    return true;
+  }
+  const unsigned char next = line[pos + folder.size()];
+  return !(std::isalnum(next) || next == '_' || next == '-' || next == '.' ||
+           next >= 0x80);
+}
+
+// Replaces the home folder with ~ wherever a line names it, so the log
+// doesn't carry the user name.
+void RedactHomeFolder(std::string& line) {
+  for (const auto& folder : home_folder_spellings_) {
+    const char first = folder[0];
+    for (size_t pos = line.find(first); pos != std::string::npos;
+         pos = line.find(first, pos + 1)) {
+      if (NamesFolderAt(line, pos, folder)) {
+        line.replace(pos, folder.size(), "~");
+      }
+    }
+  }
+}
 
 FileLogSink::~FileLogSink() {
   if (file_) {
@@ -292,6 +374,8 @@ class Logger {
 
   std::unique_ptr<xe::threading::Thread> write_thread_;
   std::atomic<uint32_t> write_thread_id_{0};
+  // Write thread only: the line being written out.
+  std::string line_scratch_;
 
   void Write(const char* buf, size_t size) {
     for (const auto& sink : sinks_) {
@@ -350,27 +434,29 @@ class Logger {
           }
 
           if (line.buffer_length) {
-            // Get access to the line data - which may be split in the ring
-            // buffer - and write it out in parts.
+            // Gather the line data - which may be split in the ring buffer -
+            // so the home folder can be redacted before it's written out.
             auto line_range = rb.BeginRead(line.buffer_length);
-            Write(reinterpret_cast<const char*>(line_range.first),
-                  line_range.first_length);
+            line_scratch_.assign(
+                reinterpret_cast<const char*>(line_range.first),
+                line_range.first_length);
             if (line_range.second_length) {
-              Write(reinterpret_cast<const char*>(line_range.second),
-                    line_range.second_length);
+              line_scratch_.append(
+                  reinterpret_cast<const char*>(line_range.second),
+                  line_range.second_length);
             }
+            rb.EndRead(std::move(line_range));
+
+            if (!cvars::log_user_paths) {
+              RedactHomeFolder(line_scratch_);
+            }
+            Write(line_scratch_.data(), line_scratch_.size());
 
             // Always ensure there is a newline.
-            char last_char =
-                line_range.second
-                    ? line_range.second[line_range.second_length - 1]
-                    : line_range.first[line_range.first_length - 1];
-            if (last_char != '\n') {
+            if (line_scratch_.back() != '\n') {
               constexpr char suffix[1] = {'\n'};
               Write(suffix, 1);
             }
-
-            rb.EndRead(std::move(line_range));
           } else {
             // Always ensure there is a newline.
             constexpr char suffix[1] = {'\n'};
@@ -480,6 +566,7 @@ FILE* OpenLogFile(const std::filesystem::path& path, bool truncate) {
 #endif  // !XE_PLATFORM_ANDROID
 
 void InitializeLogging(const std::string_view app_name) {
+  home_folder_spellings_ = HomeFolderSpellings();
   auto mem = memory::AlignedAlloc<Logger>(0x10);
   logger_ = new (mem) Logger(app_name);
 
