@@ -273,6 +273,12 @@ class ContentManager {
                        const XCONTENT_AGGREGATE_DATA& data,
                        uint32_t& content_license,
                        const uint32_t disc_number = -1);
+  // Mounts a package file that lives on a guest device, such as the game
+  // disc, under root_name. The package is read from the host file behind the
+  // entry; packages inside disc images are not supported yet.
+  X_RESULT OpenContentFromGuestFile(const std::string_view root_name,
+                                    const std::string_view guest_path,
+                                    uint32_t& content_license);
   X_RESULT CloseContent(const std::string_view root_name);
   X_RESULT GetContentThumbnail(const uint64_t xuid,
                                const XCONTENT_AGGREGATE_DATA& data,

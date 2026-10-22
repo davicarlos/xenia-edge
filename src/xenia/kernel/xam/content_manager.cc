@@ -21,6 +21,7 @@
 #include "xenia/kernel/xfile.h"
 #include "xenia/kernel/xobject.h"
 #include "xenia/vfs/devices/host_path_device.h"
+#include "xenia/vfs/devices/host_path_entry.h"
 #include "xenia/vfs/devices/xcontent_container_device.h"
 
 DECLARE_int32(license_mask);
@@ -589,6 +590,53 @@ X_RESULT ContentManager::OpenContent(const std::string_view root_name,
   open_packages_.insert(
       {string_key_insensitive::create(root_name), package.release()});
 
+  return X_ERROR_SUCCESS;
+}
+
+X_RESULT ContentManager::OpenContentFromGuestFile(
+    const std::string_view root_name, const std::string_view guest_path,
+    uint32_t& content_license) {
+  auto global_lock = global_critical_region_.Acquire();
+
+  if (open_packages_.count(string_key_insensitive(root_name))) {
+    XELOGW("{}: Root name {} is already in use", __func__, root_name);
+    return X_ERROR_ALREADY_EXISTS;
+  }
+
+  auto entry = kernel_state_->file_system()->ResolvePath(guest_path);
+  if (!entry || (entry->attributes() & vfs::kFileAttributeDirectory)) {
+    XELOGW("{}: {} is not a file", __func__, guest_path);
+    return X_ERROR_FILE_NOT_FOUND;
+  }
+
+  // The package device reads the file from the host, so the entry must come
+  // from a host directory (a game extracted to a folder).
+  // TODO(knuckleslee): Map entries of disc images into memory, as loading a
+  // module from a disc does.
+  auto host_entry = dynamic_cast<vfs::HostPathEntry*>(entry);
+  if (!host_entry) {
+    XELOGE(
+        "{}: {} is inside a disc image; opening packages from disc images is "
+        "not supported yet",
+        __func__, guest_path);
+    return X_ERROR_FILE_NOT_FOUND;
+  }
+
+  XCONTENT_AGGREGATE_DATA data = {};
+  auto package = std::make_unique<ContentPackage>(kernel_state_, root_name,
+                                                  data, host_entry->host_path());
+  if (!package->is_mounted()) {
+    XELOGE("{}: Cannot mount {} as {}", __func__, guest_path, root_name);
+    return X_ERROR_FILE_NOT_FOUND;
+  }
+
+  content_license = package->GetPackageLicense();
+  if (static_cast<uint32_t>(cvars::license_mask) > 0) {
+    content_license |= cvars::license_mask;
+  }
+
+  open_packages_.insert(
+      {string_key_insensitive::create(root_name), package.release()});
   return X_ERROR_SUCCESS;
 }
 
