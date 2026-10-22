@@ -34,6 +34,7 @@
 #include "xenia/kernel/util/shim_utils.h"
 #include "xenia/kernel/xboxkrnl/xboxkrnl_private.h"
 #include "xenia/kernel/xthread.h"
+#include "xenia/memory.h"
 #include "xenia/xbox.h"
 
 DEFINE_bool(allow_kinect_camera, false,
@@ -253,6 +254,7 @@ class CameraDevice {
     if (completion == kNoCompletionRoutine) {
       completion = 0;
     }
+    LogFirstRequest(code, request_ptr);
 
     if (!camera_) {
       if (code == CameraRequestCode::kGetState) {
@@ -324,6 +326,30 @@ class CameraDevice {
   template <typename T>
   T* Guest(uint32_t address) const {
     return memory_->TranslateVirtual<T*>(address);
+  }
+
+  // Logs the first request of each code with its leading words, to see what a
+  // title's Kinect runtime asks for.
+  void LogFirstRequest(CameraRequestCode code, uint32_t request_ptr) {
+    const uint32_t code_value = static_cast<uint32_t>(code);
+    {
+      std::lock_guard<xe_mutex> lock(mutex_);
+      if (code_value < 64 && (logged_codes_ & (uint64_t(1) << code_value))) {
+        return;
+      }
+      if (code_value < 64) {
+        logged_codes_ |= uint64_t(1) << code_value;
+      }
+    }
+    auto words = Guest<xe::be<uint32_t>>(request_ptr);
+    XELOGI(
+        "PsCamDeviceRequest: first code {} at {:08X}: {:08X} {:08X} {:08X} "
+        "{:08X} {:08X} {:08X} {:08X} {:08X} {:08X} {:08X} {:08X} {:08X}",
+        code_value, request_ptr, uint32_t(words[0]), uint32_t(words[1]),
+        uint32_t(words[2]), uint32_t(words[3]), uint32_t(words[4]),
+        uint32_t(words[5]), uint32_t(words[6]), uint32_t(words[7]),
+        uint32_t(words[8]), uint32_t(words[9]), uint32_t(words[10]),
+        uint32_t(words[11]));
   }
 
   // Checks that the first and last byte of a guest range are mapped.
@@ -516,18 +542,45 @@ class CameraDevice {
       Complete(done);
       return true;
     }
+    // The frame lands where the title's GPU work reads it as a texture, so
+    // the memory watches must hear of the write, like file reads into
+    // physical memory, or the GPU keeps using its copy of an older frame.
+    PhysicalHeap* physical_heap = nullptr;
+    if (BaseHeap* heap = memory_->LookupHeap(buffer);
+        heap && heap->heap_type() == HeapType::kGuestPhysical) {
+      physical_heap = static_cast<PhysicalHeap*>(heap);
+      physical_heap->ProvideReadWatchedEdgePages(buffer, frame_bytes);
+    }
+    // Written through the physical view, which the watches don't protect.
+    uint8_t* dest = physical_heap
+                        ? memory_->TranslatePhysical(
+                              physical_heap->GetPhysicalAddress(buffer))
+                        : Guest<uint8_t>(buffer);
     if (depth) {
-      UnpackDepth(frame_, Guest<uint8_t>(buffer), frame_bytes / 2);
-      DumpDepth(Guest<uint8_t>(buffer), frame_bytes);
+      UnpackDepth(frame_, dest, frame_bytes / 2);
+      DumpDepth(dest, frame_bytes);
     } else {
-      std::memcpy(Guest<uint8_t>(buffer), frame_.data(), frame_bytes);
+      std::memcpy(dest, frame_.data(), frame_bytes);
       request->settings_generation = settings_generation_;
+    }
+    if (physical_heap) {
+      physical_heap->TriggerCallbacks(
+          xe::global_critical_region::AcquireDirect(), buffer, frame_bytes,
+          true, true, true, false, true);
     }
     const uint32_t counter_ptr = request->frame_counter_ptr;
     if (counter_ptr) {
       *Guest<xe::be<uint32_t>>(counter_ptr) = sequence;
     }
     done.bytes = frame_bytes;
+    if (!(depth ? logged_depth_frame_ : logged_color_frame_)) {
+      (depth ? logged_depth_frame_ : logged_color_frame_) = true;
+      XELOGI(
+          "PsCamDeviceRequest: first {} frame {} to {:08X} (size {:X}, "
+          "request {:08X})",
+          depth ? "depth" : "color", sequence, buffer,
+          uint32_t(request->buffer_size), read.request_ptr);
+    }
     Complete(done);
     return true;
   }
@@ -644,6 +697,9 @@ class CameraDevice {
   std::atomic<uint8_t> settings_generation_ = 0;
   std::vector<uint8_t> frame_;
   std::chrono::steady_clock::time_point last_dump_;
+  uint64_t logged_codes_ = 0;
+  bool logged_depth_frame_ = false;
+  bool logged_color_frame_ = false;
 };
 
 xe_mutex g_camera_device_mutex;
