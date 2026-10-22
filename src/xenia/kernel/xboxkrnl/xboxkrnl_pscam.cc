@@ -48,6 +48,11 @@ DEFINE_bool(kinect_use_usbdk, true,
             "usbfs and detaches the kernel driver itself.",
             "HID");
 
+DEFINE_bool(kinect_mirror, false,
+            "Mirror the Kinect depth and color images horizontally before "
+            "titles get them.",
+            "HID");
+
 DEFINE_path(kinect_replay_path, "",
             "Play the Kinect recording in this directory (made with "
             "xenia-kinect-camera-test --record_dir) as the camera instead of "
@@ -528,6 +533,7 @@ class CameraDevice {
   // Unpacks big-endian 11-bit samples into big-endian 16-bit words.
   static void UnpackDepth(const std::vector<uint8_t>& packed, uint8_t* out,
                           size_t pixels) {
+    const bool mirror = cvars::kinect_mirror;
     uint32_t bits = 0;
     int bit_count = 0;
     size_t in = 0;
@@ -543,7 +549,12 @@ class CameraDevice {
       if (raw == kNoDepthRaw) {
         raw = 0;
       }
-      xe::store_and_swap<uint16_t>(out + i * 2, raw);
+      size_t index = i;
+      if (mirror) {
+        const size_t x = i % kFrameWidth;
+        index = i - x + (kFrameWidth - 1 - x);
+      }
+      xe::store_and_swap<uint16_t>(out + index * 2, raw);
     }
   }
 
@@ -571,7 +582,20 @@ class CameraDevice {
       UnpackDepth(frame_, Guest<uint8_t>(buffer), frame_bytes / 2);
       DumpDepth(Guest<uint8_t>(buffer), frame_bytes);
     } else {
-      std::memcpy(Guest<uint8_t>(buffer), frame_.data(), frame_bytes);
+      if (cvars::kinect_mirror) {
+        // Pairs of pixels are reversed, keeping the Bayer pattern in place.
+        uint8_t* dest = Guest<uint8_t>(buffer);
+        for (uint32_t y = 0; y < kFrameHeight; ++y) {
+          const uint8_t* src_row = frame_.data() + y * kFrameWidth;
+          uint8_t* dest_row = dest + y * kFrameWidth;
+          for (uint32_t x = 0; x < kFrameWidth; x += 2) {
+            dest_row[kFrameWidth - 2 - x] = src_row[x];
+            dest_row[kFrameWidth - 1 - x] = src_row[x + 1];
+          }
+        }
+      } else {
+        std::memcpy(Guest<uint8_t>(buffer), frame_.data(), frame_bytes);
+      }
       request->settings_generation = settings_generation_;
     }
     const uint32_t counter_ptr = request->frame_counter_ptr;
