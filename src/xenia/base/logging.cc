@@ -13,6 +13,7 @@
 #include <atomic>
 #include <cstdlib>
 #include <cstring>
+#include <mutex>
 
 #include "third_party/disruptorplus/include/disruptorplus/multi_threaded_claim_strategy.hpp"
 #include "third_party/disruptorplus/include/disruptorplus/ring_buffer.hpp"
@@ -520,7 +521,76 @@ FILE* OpenLogFile(const std::filesystem::path& path, bool truncate) {
 }
 #endif  // !XE_PLATFORM_ANDROID
 
-void InitializeLogging(const std::string_view app_name) {
+#if !XE_PLATFORM_ANDROID
+// Log file sink that holds the lines logged before the app has chosen where
+// the file goes, and writes them out once it has.
+class DeferredFileLogSink final : public LogSink {
+ public:
+  ~DeferredFileLogSink() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    CloseFile();
+  }
+
+  void Write(const char* buf, size_t size) override {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (file_) {
+      fwrite(buf, 1, size, file_);
+    } else if (!attached_ && held_.size() + size <= kMaxHeldSize) {
+      held_.append(buf, size);
+    }
+  }
+
+  void Flush() override {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (file_) {
+      fflush(file_);
+    }
+  }
+
+  // Takes ownership of the file; the held lines are written to it first.
+  // Drops them if there's no file, as nothing will ever take them.
+  void Attach(FILE* file) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    CloseFile();
+    file_ = file;
+    attached_ = true;
+    if (file_ && !held_.empty()) {
+      fwrite(held_.data(), 1, held_.size(), file_);
+    }
+    held_.clear();
+    held_.shrink_to_fit();
+  }
+
+  bool attached() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return attached_;
+  }
+
+ private:
+  // Enough for a startup, in case the file is never attached.
+  static constexpr size_t kMaxHeldSize = 4_MiB;
+
+  void CloseFile() {
+    if (file_) {
+      fflush(file_);
+      fclose(file_);
+      file_ = nullptr;
+    }
+  }
+
+  std::mutex mutex_;
+  FILE* file_ = nullptr;
+  bool attached_ = false;
+  std::string held_;
+};
+
+// Owned by the logger; set while the file is deferred.
+DeferredFileLogSink* deferred_file_sink_ = nullptr;
+// Where the log goes when the app doesn't choose: next to the executable.
+std::filesystem::path default_log_path_;
+#endif  // !XE_PLATFORM_ANDROID
+
+void InitializeLogging(const std::string_view app_name, bool defer_log_file) {
   auto mem = memory::AlignedAlloc<Logger>(0x10);
   logger_ = new (mem) Logger(app_name);
 
@@ -531,17 +601,15 @@ void InitializeLogging(const std::string_view app_name) {
     logger_->AddLogSink(std::make_unique<AndroidLogSink>(app_name));
   }
 #else
+  default_log_path_ =
+      xe::filesystem::GetExecutableFolder() / fmt::format("{}.log", app_name);
   {
-    std::filesystem::path log_path;
-    if (cvars::log_file.empty()) {
-      log_path = xe::filesystem::GetExecutableFolder() /
-                 fmt::format("{}.log", app_name);
-    } else {
-      xe::filesystem::CreateParentFolder(cvars::log_file);
-      log_path = cvars::log_file;
-    }
-    logger_->AddLogSink(std::make_unique<FileLogSink>(
-        OpenLogFile(log_path, !cvars::log_append), true));
+    auto sink = std::make_unique<DeferredFileLogSink>();
+    deferred_file_sink_ = sink.get();
+    logger_->AddLogSink(std::move(sink));
+  }
+  if (!defer_log_file) {
+    SetLogFile(cvars::log_file.empty() ? default_log_path_ : cvars::log_file);
   }
 
   if (cvars::log_to_stdout) {
@@ -554,9 +622,35 @@ void InitializeLogging(const std::string_view app_name) {
 #endif  // XE_PLATFORM_ANDROID
 }
 
+void SetLogFile(const std::filesystem::path& path) {
+#if !XE_PLATFORM_ANDROID
+  if (!deferred_file_sink_) {
+    return;
+  }
+  xe::filesystem::CreateParentFolder(path);
+  FILE* file = OpenLogFile(path, !cvars::log_append);
+  deferred_file_sink_->Attach(file);
+  if (!file) {
+    XELOGE("Failed to open the log file {}", path);
+  }
+#endif  // !XE_PLATFORM_ANDROID
+}
+
+void EnsureLogFile() {
+#if !XE_PLATFORM_ANDROID
+  if (deferred_file_sink_ && !deferred_file_sink_->attached()) {
+    SetLogFile(cvars::log_file.empty() ? default_log_path_ : cvars::log_file);
+  }
+#endif  // !XE_PLATFORM_ANDROID
+}
+
 void ShutdownLogging() {
+  EnsureLogFile();
   Logger* logger = logger_;
   logger_ = nullptr;
+#if !XE_PLATFORM_ANDROID
+  deferred_file_sink_ = nullptr;
+#endif  // !XE_PLATFORM_ANDROID
 
   logger->~Logger();
   memory::AlignedFree(logger);

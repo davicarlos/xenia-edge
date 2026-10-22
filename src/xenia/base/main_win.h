@@ -21,7 +21,9 @@ bool ParseWin32LaunchArguments(
     const std::vector<std::string>& positional_options,
     std::vector<std::string>* args_out);
 // InitializeWin32App uses cvars, call ParseWin32LaunchArguments before.
-int InitializeWin32App(const std::string_view app_name);
+// defer_log_file is passed on to InitializeLogging.
+int InitializeWin32App(const std::string_view app_name,
+                       bool defer_log_file = false);
 void ShutdownWin32App();
 
 }  // namespace xe
