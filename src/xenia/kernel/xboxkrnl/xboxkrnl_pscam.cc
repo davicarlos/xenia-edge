@@ -21,7 +21,9 @@
 #include <mutex>
 #include <vector>
 
+#include "third_party/fmt/include/fmt/format.h"
 #include "xenia/base/cvar.h"
+#include "xenia/base/filesystem.h"
 #include "xenia/base/logging.h"
 #include "xenia/base/memory.h"
 #include "xenia/base/mutex.h"
@@ -43,6 +45,12 @@ DEFINE_bool(kinect_use_usbdk, true,
             "its Windows driver while the emulator runs. When disabled, the "
             "camera must use the WinUSB driver. Windows only; Linux uses "
             "usbfs and detaches the kernel driver itself.",
+            "HID");
+
+DEFINE_path(kinect_dump_depth_path, "",
+            "Write the latest depth frame handed to the title to this file "
+            "every two seconds, as a 16-bit PGM of raw 11-bit disparities, "
+            "for checking what the title's tracker sees.",
             "HID");
 
 namespace xe {
@@ -510,6 +518,7 @@ class CameraDevice {
     }
     if (depth) {
       UnpackDepth(frame_, Guest<uint8_t>(buffer), frame_bytes / 2);
+      DumpDepth(Guest<uint8_t>(buffer), frame_bytes);
     } else {
       std::memcpy(Guest<uint8_t>(buffer), frame_.data(), frame_bytes);
       request->settings_generation = settings_generation_;
@@ -521,6 +530,30 @@ class CameraDevice {
     done.bytes = frame_bytes;
     Complete(done);
     return true;
+  }
+
+  // Writes the unpacked depth frame (big-endian 16-bit words, as the title
+  // gets it) to kinect_dump_depth_path now and then.
+  void DumpDepth(const uint8_t* unpacked, uint32_t bytes) {
+    if (cvars::kinect_dump_depth_path.empty()) {
+      return;
+    }
+    const auto now = std::chrono::steady_clock::now();
+    if (last_dump_ != std::chrono::steady_clock::time_point() &&
+        now - last_dump_ < std::chrono::seconds(2)) {
+      return;
+    }
+    last_dump_ = now;
+    FILE* file = xe::filesystem::OpenFile(cvars::kinect_dump_depth_path, "wb");
+    if (!file) {
+      return;
+    }
+    // PGM 16-bit samples are big-endian, like the frame.
+    const std::string header =
+        fmt::format("P5\n{} {}\n{}\n", kFrameWidth, kFrameHeight, kNoDepthRaw);
+    fwrite(header.data(), 1, header.size(), file);
+    fwrite(unpacked, 1, bytes, file);
+    fclose(file);
   }
 
   // Does not read the request, which the title may have reused.
@@ -610,6 +643,7 @@ class CameraDevice {
   uint8_t requested_generation_ = 0;
   std::atomic<uint8_t> settings_generation_ = 0;
   std::vector<uint8_t> frame_;
+  std::chrono::steady_clock::time_point last_dump_;
 };
 
 xe_mutex g_camera_device_mutex;
