@@ -8,6 +8,8 @@
  */
 
 #include "xenia/kernel/nui.h"
+
+#include <algorithm>
 #include "xenia/base/assert.h"
 #include "xenia/kernel/kernel_state.h"
 #include "xenia/xbox.h"
@@ -46,6 +48,11 @@ void NUIController::SetNUIVersion(uint64_t version, uint32_t index) {
 }
 uint64_t NUIController::GetSessionId() { return session_id; }
 void NUIController::SetSessionId(uint64_t id) { session_id = id; }
+
+void NUIController::SetElevationAngle(int32_t angle) {
+  elevation_angle_ =
+      std::clamp(angle, kElevationMinimum, kElevationMaximum);
+}
 
 uint32_t NUIController::NuiHudCheck(uint64_t tracking_id) {
   if (!GetNUIDataPtr() || !GetUnknown2() || !NuiInitialized()) {

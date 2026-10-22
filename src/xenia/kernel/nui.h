@@ -47,6 +47,13 @@ class NUIController {
   void SetSessionId(uint64_t id);
   uint32_t NuiHudCheck(uint64_t tracking_id);
 
+  // Camera elevation in degrees, as the Kinect tilt motor would report it.
+  // Without the motor device the angle is the last one a title set.
+  static constexpr int32_t kElevationMinimum = -27;
+  static constexpr int32_t kElevationMaximum = 27;
+  int32_t GetElevationAngle() const { return elevation_angle_; }
+  void SetElevationAngle(int32_t angle);
+
  private:
   uint32_t nui_data_ptr = 0x1;  // Meant to be a ptr to a larger structure
   char nui_unknown_2 = 0x1;     // exists at 0x50 within nui data structure
@@ -55,6 +62,7 @@ class NUIController {
   uint64_t session_id = 0x0;
   uint32_t tilt_callback_ = 0x0;
   uint32_t init_flags_ = 0x0;
+  int32_t elevation_angle_ = 0;
   uint64_t nui_versions_[2] = {};
 };
 
