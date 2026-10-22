@@ -542,31 +542,12 @@ class CameraDevice {
       Complete(done);
       return true;
     }
-    // The frame lands where the title's GPU work reads it as a texture, so
-    // the memory watches must hear of the write, like file reads into
-    // physical memory, or the GPU keeps using its copy of an older frame.
-    PhysicalHeap* physical_heap = nullptr;
-    if (BaseHeap* heap = memory_->LookupHeap(buffer);
-        heap && heap->heap_type() == HeapType::kGuestPhysical) {
-      physical_heap = static_cast<PhysicalHeap*>(heap);
-      physical_heap->ProvideReadWatchedEdgePages(buffer, frame_bytes);
-    }
-    // Written through the physical view, which the watches don't protect.
-    uint8_t* dest = physical_heap
-                        ? memory_->TranslatePhysical(
-                              physical_heap->GetPhysicalAddress(buffer))
-                        : Guest<uint8_t>(buffer);
     if (depth) {
-      UnpackDepth(frame_, dest, frame_bytes / 2);
-      DumpDepth(dest, frame_bytes);
+      UnpackDepth(frame_, Guest<uint8_t>(buffer), frame_bytes / 2);
+      DumpDepth(Guest<uint8_t>(buffer), frame_bytes);
     } else {
-      std::memcpy(dest, frame_.data(), frame_bytes);
+      std::memcpy(Guest<uint8_t>(buffer), frame_.data(), frame_bytes);
       request->settings_generation = settings_generation_;
-    }
-    if (physical_heap) {
-      physical_heap->TriggerCallbacks(
-          xe::global_critical_region::AcquireDirect(), buffer, frame_bytes,
-          true, true, true, false, true);
     }
     const uint32_t counter_ptr = request->frame_counter_ptr;
     if (counter_ptr) {
