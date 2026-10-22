@@ -2610,31 +2610,42 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type,
 
   const bool memexport_used_vertex = vertex_shader->memexport_eM_written() != 0;
 
-  // Pixel shader analysis.
+  // Pixel shader analysis. The bound pixel shader has to be analyzed before it
+  // can be told whether the draw does anything at all, because a draw whose
+  // frame buffer export is suppressed is still rasterized for the sake of a
+  // pixel shader that writes to memory.
   bool primitive_polygonal = draw_util::IsPrimitivePolygonal(regs);
-  bool is_rasterization_done =
-      draw_util::IsRasterizationPotentiallyDone(regs, primitive_polygonal);
+  auto bound_pixel_shader = static_cast<SpirvShader*>(active_pixel_shader());
+  if (bound_pixel_shader) {
+    pipeline_cache_->AnalyzeShaderUcode(*bound_pixel_shader);
+  }
+  bool memexport_used_bound_pixel =
+      !draw_util::IsVIZSurveyDraw(regs) && bound_pixel_shader &&
+      bound_pixel_shader->memexport_eM_written() != 0 &&
+      edram_mode == xenos::EdramMode::kColorDepth;
+  bool is_rasterization_done = draw_util::IsRasterizationPotentiallyDone(
+      regs, primitive_polygonal, memexport_used_bound_pixel);
   SpirvShader* pixel_shader = nullptr;
   if (is_rasterization_done) {
     // See xenos::EdramMode for explanation why the pixel shader is only used
     // when it's kColorDepth here.
     if (edram_mode == xenos::EdramMode::kColorDepth) {
-      pixel_shader = static_cast<SpirvShader*>(active_pixel_shader());
-      if (pixel_shader) {
-        pipeline_cache_->AnalyzeShaderUcode(*pixel_shader);
-        if (!draw_util::IsPixelShaderNeededWithRasterization(*pixel_shader,
-                                                             regs)) {
-          pixel_shader = nullptr;
-        }
+      pixel_shader = bound_pixel_shader;
+      if (pixel_shader && !draw_util::IsPixelShaderNeededWithRasterization(
+                              *pixel_shader, regs)) {
+        pixel_shader = nullptr;
       }
     }
-  } else {
-    // Disabling pixel shader for this case is also required by the pipeline
-    // cache.
-    if (!memexport_used_vertex) {
-      // This draw has no effect.
-      return true;
-    }
+  }
+  if (bound_pixel_shader && !pixel_shader) {
+    draw_util::ReportDroppedMemexportPixelShader(*bound_pixel_shader, regs);
+  } else if (pixel_shader && pixel_shader->memexport_eM_written() != 0) {
+    draw_util::ReportKeptMemexportPixelShader(*pixel_shader, regs);
+  }
+  if (!is_rasterization_done && !memexport_used_vertex) {
+    // This draw has no effect. Leaving the pixel shader disabled in this case
+    // is also required by the pipeline cache.
+    return true;
   }
 
   const bool memexport_used_pixel =

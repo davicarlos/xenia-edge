@@ -3453,31 +3453,52 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
     draw_util::AddMemExportRanges(regs, *vertex_shader, memexport_ranges_);
   }
 
-  // Pixel shader analysis.
+  // Pixel shader analysis. The bound pixel shader has to be analyzed before it
+  // can be told whether the draw does anything at all, because a draw whose
+  // frame buffer export is suppressed is still rasterized for the sake of a
+  // pixel shader that writes to memory; a device that can't store from
+  // fragment shaders can't run those exports, and then such a draw really has
+  // no effect.
   bool primitive_polygonal = draw_util::IsPrimitivePolygonal(regs);
-  bool is_rasterization_done =
-      draw_util::IsRasterizationPotentiallyDone(regs, primitive_polygonal);
+  auto bound_pixel_shader = static_cast<VulkanShader*>(active_pixel_shader());
+  if (bound_pixel_shader) {
+    pipeline_cache_->AnalyzeShaderUcode(*bound_pixel_shader);
+  }
+  // The EDRAM mode is a part of this because the pixel shader is bound only
+  // for kColorDepth below - so in any other mode the shader cannot export
+  // anything, and claiming it can would make this disagree with the pipeline
+  // cache, which re-derives the same decision from the pixel shader it is
+  // handed. draw_util::IsRasterizationPotentiallyDone requires every caller to
+  // supply the same value.
+  bool memexport_used_bound_pixel =
+      !draw_util::IsVIZSurveyDraw(regs) && bound_pixel_shader &&
+      bound_pixel_shader->memexport_eM_written() != 0 &&
+      device_properties.fragmentStoresAndAtomics &&
+      edram_mode == xenos::EdramMode::kColorDepth;
+  bool is_rasterization_done = draw_util::IsRasterizationPotentiallyDone(
+      regs, primitive_polygonal, memexport_used_bound_pixel);
   VulkanShader* pixel_shader = nullptr;
   if (is_rasterization_done) {
     // See xenos::EdramMode for explanation why the pixel shader is only used
     // when it's kColorDepth here.
     if (edram_mode == xenos::EdramMode::kColorDepth) {
-      pixel_shader = static_cast<VulkanShader*>(active_pixel_shader());
-      if (pixel_shader) {
-        pipeline_cache_->AnalyzeShaderUcode(*pixel_shader);
-        if (!draw_util::IsPixelShaderNeededWithRasterization(*pixel_shader,
-                                                             regs)) {
-          pixel_shader = nullptr;
-        }
+      pixel_shader = bound_pixel_shader;
+      if (pixel_shader && !draw_util::IsPixelShaderNeededWithRasterization(
+                              *pixel_shader, regs)) {
+        pixel_shader = nullptr;
       }
     }
-  } else {
-    // Disabling pixel shader for this case is also required by the pipeline
-    // cache.
-    if (!memexport_used_vertex) {
-      // This draw has no effect.
-      return true;
-    }
+  }
+  if (bound_pixel_shader && !pixel_shader) {
+    draw_util::ReportDroppedMemexportPixelShader(*bound_pixel_shader, regs);
+  } else if (pixel_shader && pixel_shader->memexport_eM_written() != 0) {
+    draw_util::ReportKeptMemexportPixelShader(*pixel_shader, regs);
+  }
+  if (!is_rasterization_done && !memexport_used_vertex) {
+    // This draw has no effect - without rasterization the pixel shader can't
+    // run either, so it can write neither pixels nor memory. Leaving the pixel
+    // shader disabled in this case is also required by the pipeline cache.
+    return true;
   }
   const bool memexport_used_pixel = pixel_shader &&
                                     pixel_shader->memexport_eM_written() != 0 &&
@@ -4803,6 +4824,12 @@ bool VulkanCommandProcessor::IssueCopy() {
   // output isn't overwritten with guest RAM by a later texture load.
   ClearMemexportPages(written_address, written_length);
 
+  if (cvars::log_resolve_readback && written_length > 0 &&
+      !IsResolveDestinationResident(written_address, written_length)) {
+    XELOGW("Resolve readback: destination {:08X}+{:X} is not resident, not "
+           "noted",
+           written_address, written_length);
+  }
   if (IsReadbackResolveEnabled() && written_length > 0 &&
       IsResolveDestinationResident(written_address, written_length)) {
     // A CPU access copies the output into guest RAM out of the shared memory
