@@ -41,7 +41,8 @@ DEFINE_bool(allow_kinect_camera, false,
 DEFINE_bool(kinect_use_usbdk, true,
             "Access a Kinect v1 camera through UsbDk, which borrows it from "
             "its Windows driver while the emulator runs. When disabled, the "
-            "camera must use the WinUSB driver.",
+            "camera must use the WinUSB driver. Windows only; Linux uses "
+            "usbfs and detaches the kernel driver itself.",
             "HID");
 
 namespace xe {

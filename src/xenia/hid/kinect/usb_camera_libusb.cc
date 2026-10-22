@@ -10,8 +10,11 @@
 // Kinect v1 camera over libusb. The protocol follows libfreenect
 // (src/flags.c, src/cameras.c, Apache-2.0).
 //
-// UsbDk detaches the camera from its Windows driver only while it's open,
-// WinUSB needs the camera bound to it.
+// Windows: UsbDk detaches the camera from its Windows driver only while it's
+// open, WinUSB needs the camera bound to it.
+// Linux: usbfs, with the kernel's gspca_kinect driver detached from the
+// camera interface while it's open and reattached on release. The device node
+// must be writable by the user (a udev rule for 045e:02ae).
 
 #include "xenia/hid/kinect/usb_camera.h"
 
@@ -26,6 +29,7 @@
 
 #include "xenia/base/logging.h"
 #include "xenia/base/mutex.h"
+#include "xenia/base/platform.h"
 #include "xenia/base/threading.h"
 
 #include "third_party/libusb/libusb/libusb.h"
@@ -36,10 +40,10 @@ namespace kinect {
 
 namespace {
 
-class UsbCameraWin;
+class UsbCameraLibusb;
 
 void CloseOpenCameras();
-void UnregisterOpenCamera(UsbCameraWin* camera);
+void UnregisterOpenCamera(UsbCameraLibusb* camera);
 
 constexpr uint16_t kVendorId = 0x045E;
 constexpr uint16_t kCameraProductId = 0x02AE;
@@ -107,6 +111,12 @@ libusb_device_handle* OpenDevice(libusb_context* context, uint16_t product_id) {
     if (result < 0) {
       XELOGW("Kinect: cannot open USB device {:04X} ({})", product_id,
              libusb_error_name(result));
+      if (result == LIBUSB_ERROR_ACCESS) {
+        XELOGW(
+            "Kinect: the USB device node is not writable; on Linux add a udev "
+            "rule such as 'SUBSYSTEM==\"usb\", ATTR{{idVendor}}==\"045e\", "
+            "MODE=\"0666\"' and replug the sensor");
+      }
       handle = nullptr;
     }
   }
@@ -209,9 +219,9 @@ class FrameAssembler {
   uint32_t latest_sequence_ = 0;
 };
 
-class UsbCameraWin : public UsbCamera {
+class UsbCameraLibusb : public UsbCamera {
  public:
-  ~UsbCameraWin() override {
+  ~UsbCameraLibusb() override {
     UnregisterOpenCamera(this);
     Close();
   }
@@ -222,19 +232,33 @@ class UsbCameraWin : public UsbCamera {
       context_ = nullptr;
       return false;
     }
+#if XE_PLATFORM_WIN32
     if (use_usbdk) {
       const int result = libusb_set_option(context_, LIBUSB_OPTION_USE_USBDK);
       if (result < 0) {
         XELOGW("Kinect: UsbDk is not available ({}), using WinUSB",
                libusb_error_name(result));
+        use_usbdk = false;
       }
     }
+    backend_ = use_usbdk ? "UsbDk" : "WinUSB";
+#else
+    // UsbDk is a Windows driver; libusb picks the one native backend here.
+    static_cast<void>(use_usbdk);
+    backend_ = "usbfs";
+#endif
     handle_ = OpenDevice(context_, kCameraProductId);
     if (!handle_) {
       return false;
     }
-    if (libusb_claim_interface(handle_, 0) < 0) {
-      XELOGE("Kinect: cannot claim the camera interface");
+    // Takes the camera interface from a kernel driver (gspca_kinect on Linux)
+    // while it's claimed; a backend without kernel drivers reports
+    // LIBUSB_ERROR_NOT_SUPPORTED, which is fine.
+    libusb_set_auto_detach_kernel_driver(handle_, 1);
+    const int claim_result = libusb_claim_interface(handle_, 0);
+    if (claim_result < 0) {
+      XELOGE("Kinect: cannot claim the camera interface ({})",
+             libusb_error_name(claim_result));
       return false;
     }
     DrainReplies();
@@ -272,7 +296,7 @@ class UsbCameraWin : public UsbCamera {
       XELOGE("Kinect: cannot start the color stream");
       return false;
     }
-    XELOGI("Kinect: camera streaming via {}", use_usbdk ? "UsbDk" : "WinUSB");
+    XELOGI("Kinect: camera streaming via {}", backend_);
     return true;
   }
 
@@ -456,7 +480,7 @@ class UsbCameraWin : public UsbCamera {
   }
 
   static void LIBUSB_CALL OnTransfer(libusb_transfer* transfer) {
-    auto self = static_cast<UsbCameraWin*>(transfer->user_data);
+    auto self = static_cast<UsbCameraLibusb*>(transfer->user_data);
     const bool is_depth = transfer->endpoint == kDepthEndpoint;
     FrameAssembler* frames =
         is_depth ? &self->depth_frames_ : &self->color_frames_;
@@ -518,6 +542,7 @@ class UsbCameraWin : public UsbCamera {
 
   libusb_context* context_ = nullptr;
   libusb_device_handle* handle_ = nullptr;
+  const char* backend_ = "libusb";
   uint16_t tag_ = 0;
   UsbCameraCalibration calibration_;
   std::function<void()> on_frame_;
@@ -535,18 +560,19 @@ class UsbCameraWin : public UsbCamera {
 };
 
 // The emulator exits via std::quick_exit, which skips destructors; without
-// this UsbDk keeps the camera detached from its driver.
+// this UsbDk (Windows) keeps the camera detached from its driver and usbfs
+// (Linux) leaves the kernel driver detached until the sensor is replugged.
 xe_mutex g_open_cameras_mutex;
-std::vector<UsbCameraWin*> g_open_cameras;
+std::vector<UsbCameraLibusb*> g_open_cameras;
 
 void CloseOpenCameras() {
   std::lock_guard<xe_mutex> lock(g_open_cameras_mutex);
-  for (UsbCameraWin* camera : g_open_cameras) {
+  for (UsbCameraLibusb* camera : g_open_cameras) {
     camera->Close();
   }
 }
 
-void RegisterOpenCamera(UsbCameraWin* camera) {
+void RegisterOpenCamera(UsbCameraLibusb* camera) {
   static std::once_flag handler_registered;
   std::call_once(handler_registered,
                  []() { std::at_quick_exit(CloseOpenCameras); });
@@ -554,7 +580,7 @@ void RegisterOpenCamera(UsbCameraWin* camera) {
   g_open_cameras.push_back(camera);
 }
 
-void UnregisterOpenCamera(UsbCameraWin* camera) {
+void UnregisterOpenCamera(UsbCameraLibusb* camera) {
   std::lock_guard<xe_mutex> lock(g_open_cameras_mutex);
   g_open_cameras.erase(
       std::remove(g_open_cameras.begin(), g_open_cameras.end(), camera),
@@ -565,7 +591,7 @@ void UnregisterOpenCamera(UsbCameraWin* camera) {
 
 std::unique_ptr<UsbCamera> UsbCamera::Open(bool use_usbdk,
                                            std::function<void()> on_frame) {
-  auto camera = std::make_unique<UsbCameraWin>();
+  auto camera = std::make_unique<UsbCameraLibusb>();
   if (!camera->Initialize(use_usbdk, std::move(on_frame))) {
     return nullptr;
   }

@@ -13,7 +13,8 @@ namespace xe {
 namespace hid {
 namespace kinect {
 
-// TODO(knuckleslee): libusb is only built for Windows so far.
+// Platforms where third_party doesn't build libusb (macOS, Android) report no
+// camera; usb_camera_libusb.cc covers Windows and Linux.
 std::unique_ptr<UsbCamera> UsbCamera::Open(bool use_usbdk,
                                            std::function<void()> on_frame) {
   return nullptr;
