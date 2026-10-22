@@ -48,6 +48,12 @@ DEFINE_bool(kinect_use_usbdk, true,
             "usbfs and detaches the kernel driver itself.",
             "HID");
 
+DEFINE_path(kinect_replay_path, "",
+            "Play the Kinect recording in this directory (made with "
+            "xenia-kinect-camera-test --record_dir) as the camera instead of "
+            "a connected Kinect.",
+            "HID");
+
 DEFINE_path(kinect_dump_depth_path, "",
             "Write the latest depth frame handed to the title to this file "
             "every two seconds, as a 16-bit PGM of raw 11-bit disparities, "
@@ -209,11 +215,13 @@ class CameraDevice {
  public:
   explicit CameraDevice(KernelState* kernel_state)
       : kernel_state_(kernel_state), memory_(kernel_state->memory()) {
-    if (!cvars::allow_kinect_camera) {
-      return;
+    if (!cvars::kinect_replay_path.empty()) {
+      camera_ = hid::kinect::UsbCamera::OpenRecording(
+          cvars::kinect_replay_path, [this]() { Notify(); });
+    } else if (cvars::allow_kinect_camera) {
+      camera_ = hid::kinect::UsbCamera::Open(cvars::kinect_use_usbdk,
+                                             [this]() { Notify(); });
     }
-    camera_ = hid::kinect::UsbCamera::Open(cvars::kinect_use_usbdk,
-                                           [this]() { Notify(); });
     if (!camera_) {
       XELOGI("PsCamDeviceRequest: no Kinect camera found");
       return;
