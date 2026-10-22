@@ -797,6 +797,40 @@ dword_result_t KeReleaseSemaphore_entry(pointer_t<X_KSEMAPHORE> semaphore_ptr,
 }
 DECLARE_XBOXKRNL_EXPORT1(KeReleaseSemaphore, kThreading, kImplemented);
 
+void KeInitializeMutant_entry(pointer_t<X_KMUTANT> mutant_ptr,
+                              dword_t initial_owner) {
+  // A guest-allocated mutant, waited on and released through the Ke API. The
+  // Kinect runtime of 4D5308C9 guards its identity state with one.
+  mutant_ptr->header.type = MutantObject;
+  // signal_state: 1 free, 0 held once.
+  mutant_ptr->header.signal_state = initial_owner ? 0 : 1;
+  mutant_ptr->abandoned = false;
+  mutant_ptr->owner.m_ptr =
+      initial_owner ? XThread::GetCurrentThread()->guest_object() : 0;
+
+  auto mutant = XObject::GetNativeObject<XMutant>(kernel_state(), mutant_ptr,
+                                                  MutantObject);
+  if (!mutant) {
+    assert_always();
+  }
+}
+DECLARE_XBOXKRNL_EXPORT1(KeInitializeMutant, kThreading, kImplemented);
+
+dword_result_t KeReleaseMutant_entry(pointer_t<X_KMUTANT> mutant_ptr,
+                                     dword_t increment, dword_t abandon,
+                                     dword_t wait) {
+  auto mutant = XObject::GetNativeObject<XMutant>(kernel_state(), mutant_ptr,
+                                                  MutantObject);
+  if (!mutant) {
+    return X_STATUS_INVALID_HANDLE;
+  }
+  // Returns the signal state before the release, as the console does.
+  const int32_t previous_state = mutant_ptr->header.signal_state;
+  mutant->ReleaseMutant(increment, abandon != 0, wait != 0);
+  return static_cast<uint32_t>(previous_state);
+}
+DECLARE_XBOXKRNL_EXPORT1(KeReleaseMutant, kThreading, kImplemented);
+
 dword_result_t NtCreateSemaphore_entry(
     lpdword_t handle_ptr, pointer_t<X_OBJECT_ATTRIBUTES> obj_attributes_ptr,
     dword_t count, dword_t limit) {
