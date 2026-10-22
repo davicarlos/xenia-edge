@@ -225,8 +225,35 @@ X_HRESULT XamApp::DispatchMessageSync(uint32_t message, uint32_t buffer_ptr,
     }
     case 0x0002B002: {
       // The NUI runtime publishes each skeleton frame it fits to xam's HUD:
-      // 0xAE0 bytes with the runtime version, the floor plane, six
-      // NUI_SKELETON_DATA and the frame's timestamp. Nothing consumes it yet.
+      // 0xAE0 bytes with the runtime version, the floor plane, six 448-byte
+      // NUI_SKELETON_DATA from +48 (each starting with its tracking state:
+      // 0 none, 1 position only, 2 tracked) and the frame's timestamp.
+      // Nothing consumes it yet; the tracking states are logged now and then
+      // to tell whether the tracker sees anyone.
+      // Sent with XMsgInProcessCall and a length of 0; the frame is 0xAE0
+      // bytes by contract.
+      constexpr uint32_t kSkeletonsOffset = 48;
+      constexpr uint32_t kSkeletonSize = 448;
+      constexpr uint32_t kSkeletonCount = 6;
+      constexpr uint32_t kLogEveryFrames = 60;
+      static uint32_t frame_count = 0;
+      if (buffer_ptr && ++frame_count % kLogEveryFrames == 0) {
+        uint32_t tracked = 0, position_only = 0;
+        for (uint32_t i = 0; i < kSkeletonCount; ++i) {
+          const uint32_t state = xe::load_and_swap<uint32_t>(
+              buffer + kSkeletonsOffset + i * kSkeletonSize);
+          tracked += state == 2;
+          position_only += state == 1;
+        }
+        XELOGI(
+            "XamApp: NUI skeleton frame {}: {} tracked, {} position only, "
+            "floor plane {:.3f} {:.3f} {:.3f} {:.1f}",
+            frame_count, tracked, position_only,
+            xe::load_and_swap<float>(buffer + 16),
+            xe::load_and_swap<float>(buffer + 20),
+            xe::load_and_swap<float>(buffer + 24),
+            xe::load_and_swap<float>(buffer + 28));
+      }
       return X_E_SUCCESS;
     }
     case 0x0002A004:
