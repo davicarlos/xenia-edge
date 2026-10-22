@@ -13,7 +13,9 @@
 #include <cfloat>
 #include <cmath>
 #include <cstring>
+#include <mutex>
 #include <tuple>
+#include <unordered_set>
 
 #include "xenia/base/cvar.h"
 #include "xenia/base/logging.h"
@@ -72,7 +74,8 @@ namespace gpu {
 namespace draw_util {
 
 bool IsRasterizationPotentiallyDone(const RegisterFile& regs,
-                                    bool primitive_polygonal) {
+                                    bool primitive_polygonal,
+                                    bool pixel_shader_memexports) {
   // The sample counters live in the RB with depth/stencil testing.
   // kNoOperation and kCopy don't count. D3D sits in kCopy during
   // EVENT_WRITE_ZPD, which only snapshots the running counters.
@@ -81,9 +84,15 @@ bool IsRasterizationPotentiallyDone(const RegisterFile& regs,
       edram_mode != xenos::EdramMode::kDepthOnly) {
     return false;
   }
-  if (regs.Get<reg::SQ_PROGRAM_CNTL>().vs_export_mode ==
-          xenos::VertexShaderExportMode::kMultipass ||
-      !regs.Get<reg::RB_SURFACE_INFO>().surface_pitch) {
+  // Suppressing the frame buffer export doesn't stop the pixel shader from
+  // running, so a pass that only writes to memory is still rasterized - see
+  // IsFrameBufferExportSuppressed. Without a memory-writing pixel shader
+  // nothing observable is left of such a draw, so it's treated as not
+  // rasterized, which is also what lets it be dropped entirely.
+  if (IsFrameBufferExportSuppressed(regs) && !pixel_shader_memexports) {
+    return false;
+  }
+  if (!regs.Get<reg::RB_SURFACE_INFO>().surface_pitch) {
     return false;
   }
   // Geometry killed after hi-Z only feeds the VIZ survey. Without an ID,
@@ -112,8 +121,13 @@ bool IsVIZSurveyDraw(const RegisterFile& regs) {
 
 reg::RB_DEPTHCONTROL GetNormalizedDepthControl(const RegisterFile& regs) {
   xenos::EdramMode edram_mode = regs.Get<reg::RB_MODECONTROL>().edram_mode;
-  if (edram_mode != xenos::EdramMode::kColorDepth &&
-      edram_mode != xenos::EdramMode::kDepthOnly) {
+  // A draw whose frame buffer export is suppressed leaves the depth buffer
+  // alone as well as the color buffers, and disabling the test along with the
+  // write keeps it from taking ownership of a depth render target on the host
+  // for an image it never contributes to.
+  if ((edram_mode != xenos::EdramMode::kColorDepth &&
+       edram_mode != xenos::EdramMode::kDepthOnly) ||
+      IsFrameBufferExportSuppressed(regs)) {
     // Both depth and stencil disabled (EDRAM depth and stencil ignored).
     reg::RB_DEPTHCONTROL disabled;
     disabled.value = 0;
@@ -313,6 +327,69 @@ bool IsPixelShaderNeededWithRasterization(const Shader& shader,
 
   // Only depth / stencil passthrough potentially.
   return false;
+}
+
+void ReportDroppedMemexportPixelShader(const Shader& shader,
+                                       const RegisterFile& regs) {
+  assert_true(shader.type() == xenos::ShaderType::kPixel);
+  assert_true(shader.is_ucode_analyzed());
+  if (!shader.memexport_eM_written()) {
+    return;
+  }
+  static std::mutex dropped_memexport_pixel_shader_mutex;
+  static std::unordered_set<uint64_t> dropped_memexport_pixel_shaders;
+  bool first_time;
+  {
+    std::lock_guard<std::mutex> lock(dropped_memexport_pixel_shader_mutex);
+    first_time =
+        dropped_memexport_pixel_shaders.emplace(shader.ucode_data_hash())
+            .second;
+  }
+  if (!first_time) {
+    return;
+  }
+  auto pa_su_sc_mode_cntl = regs.Get<reg::PA_SU_SC_MODE_CNTL>();
+  XELOGW(
+      "Pixel shader {:016X} writes to memory, but the draw isn't running it - "
+      "EDRAM mode {}, vertex shader export mode {}, RB_COLOR_MASK {:08X}, "
+      "cull_front {}, cull_back {}. Whatever the guest expects that shader to "
+      "leave in memory stays as it was",
+      shader.ucode_data_hash(),
+      uint32_t(regs.Get<reg::RB_MODECONTROL>().edram_mode),
+      uint32_t(regs.Get<reg::SQ_PROGRAM_CNTL>().vs_export_mode),
+      uint32_t(regs[XE_GPU_REG_RB_COLOR_MASK]),
+      uint32_t(pa_su_sc_mode_cntl.cull_front),
+      uint32_t(pa_su_sc_mode_cntl.cull_back));
+}
+
+void ReportKeptMemexportPixelShader(const Shader& shader,
+                                    const RegisterFile& regs) {
+  assert_true(shader.type() == xenos::ShaderType::kPixel);
+  assert_true(shader.is_ucode_analyzed());
+  if (!shader.memexport_eM_written() || !IsFrameBufferExportSuppressed(regs)) {
+    return;
+  }
+  static std::mutex kept_memexport_pixel_shader_mutex;
+  static std::unordered_set<uint64_t> kept_memexport_pixel_shaders;
+  bool first_time;
+  {
+    std::lock_guard<std::mutex> lock(kept_memexport_pixel_shader_mutex);
+    first_time =
+        kept_memexport_pixel_shaders.emplace(shader.ucode_data_hash()).second;
+  }
+  if (!first_time) {
+    return;
+  }
+  XELOGI(
+      "Pixel shader {:016X} writes to memory, and the draw is kept and "
+      "rasterized for it although its frame buffer export is suppressed - "
+      "EDRAM mode {}, vertex shader export mode {}, RB_COLOR_MASK {:08X}. Its "
+      "color and depth / stencil output is discarded, and the memory it "
+      "writes is all the guest will read of the pass",
+      shader.ucode_data_hash(),
+      uint32_t(regs.Get<reg::RB_MODECONTROL>().edram_mode),
+      uint32_t(regs.Get<reg::SQ_PROGRAM_CNTL>().vs_export_mode),
+      uint32_t(regs[XE_GPU_REG_RB_COLOR_MASK]));
 }
 
 static float ViewportRecip2_0(float f) {
@@ -1055,9 +1132,12 @@ int32_t GetWindowOffsetTiles(const RegisterFile& XE_RESTRICT regs,
 
 uint32_t GetNormalizedColorMask(const RegisterFile& regs,
                                 uint32_t pixel_shader_writes_color_targets) {
+  // The color the pixel shader exports is thrown away by the hardware when the
+  // frame buffer export is suppressed, so nothing is written even though
+  // RB_COLOR_MASK says it would be.
   if (regs.Get<reg::RB_MODECONTROL>().edram_mode !=
           xenos::EdramMode::kColorDepth ||
-      IsVIZSurveyDraw(regs)) {
+      IsVIZSurveyDraw(regs) || IsFrameBufferExportSuppressed(regs)) {
     return 0;
   }
   uint32_t normalized_color_mask = 0;
