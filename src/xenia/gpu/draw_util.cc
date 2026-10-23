@@ -2028,7 +2028,8 @@ void MergeResolveRectangles(std::vector<ResolveRectangle>& rectangles) {
 bool GetResolveRectanglesFromVertexShader(
     const RegisterFile& regs, const Memory& memory, TraceWriter& trace_writer,
     const Shader& vertex_shader,
-    std::vector<ResolveRectangle>& rectangles_out) {
+    std::vector<ResolveRectangle>& rectangles_out,
+    const std::function<void(uint32_t, uint32_t)>& prepare_memory_read) {
   rectangles_out.clear();
   auto vgt_draw_initiator = regs.Get<reg::VGT_DRAW_INITIATOR>();
   if (vgt_draw_initiator.prim_type != xenos::PrimitiveType::kRectangleList ||
@@ -2079,6 +2080,9 @@ bool GetResolveRectanglesFromVertexShader(
 
   ShaderInterpreter shader_interpreter(regs, memory);
   shader_interpreter.SetTraceWriter(&trace_writer);
+  if (prepare_memory_read) {
+    shader_interpreter.SetMemoryReadCallback(prepare_memory_read);
+  }
   shader_interpreter.SetShader(vertex_shader, true);
   ResolvePositionExportSink export_sink;
   shader_interpreter.SetExportSink(&export_sink);
@@ -2151,7 +2155,9 @@ bool ResolveCopyDraw(const RegisterFile& regs, const Memory& memory,
                      const Shader* vertex_shader,
                      const ResolveRectangleFunction& resolve_rectangle,
                      uint32_t& written_address_out,
-                     uint32_t& written_length_out, bool* written_scaled_out) {
+                     uint32_t& written_length_out, bool* written_scaled_out,
+                     const std::function<void(uint32_t, uint32_t)>&
+                         prepare_memory_read) {
   if (!use_vertex_shader) {
     return resolve_rectangle(nullptr, written_address_out, written_length_out,
                              written_scaled_out);
@@ -2168,7 +2174,8 @@ bool ResolveCopyDraw(const RegisterFile& regs, const Memory& memory,
   }
   std::vector<ResolveRectangle> rectangles;
   if (!GetResolveRectanglesFromVertexShader(regs, memory, trace_writer,
-                                            *vertex_shader, rectangles)) {
+                                            *vertex_shader, rectangles,
+                                            prepare_memory_read)) {
     return false;
   }
   uint32_t written_end = 0;

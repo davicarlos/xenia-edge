@@ -14,10 +14,12 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 
 #include "xenia/gpu/register_file.h"
 #include "xenia/gpu/shader.h"
 #include "xenia/gpu/trace_writer.h"
+
 #include "xenia/memory.h"
 
 namespace xe {
@@ -27,6 +29,14 @@ class ShaderInterpreter {
  public:
   ShaderInterpreter(const RegisterFile& register_file, const Memory& memory)
       : register_file_(register_file), memory_(memory) {}
+
+  // Called with each guest physical range before texture data is read from
+  // it, so a host GPU can make output it hasn't written back current.
+  using MemoryReadCallback =
+      std::function<void(uint32_t physical_address, uint32_t length)>;
+  void SetMemoryReadCallback(MemoryReadCallback callback) {
+    memory_read_callback_ = std::move(callback);
+  }
 
   class ExportSink {
    public:
@@ -149,6 +159,7 @@ class ShaderInterpreter {
   const Memory& memory_;
 
   TraceWriter* trace_writer_ = nullptr;
+  MemoryReadCallback memory_read_callback_;
 
   ExportSink* export_sink_ = nullptr;
 

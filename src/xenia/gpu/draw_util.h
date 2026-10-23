@@ -936,9 +936,14 @@ bool GetResolveInfo(const RegisterFile& regs, const Memory& memory,
 // Gets the merged rectangles of a copy draw without the Direct3D 9 vertices in
 // vf0 by running its vertex shader on the CPU. Returns false if they can't be
 // obtained.
+// prepare_memory_read is called with each guest physical range before the
+// vertex shader reads texture data from it: the host GPU may still hold the
+// output of an earlier resolve there, which the shader has to see.
 bool GetResolveRectanglesFromVertexShader(
     const RegisterFile& regs, const Memory& memory, TraceWriter& trace_writer,
-    const Shader& vertex_shader, std::vector<ResolveRectangle>& rectangles_out);
+    const Shader& vertex_shader, std::vector<ResolveRectangle>& rectangles_out,
+    const std::function<void(uint32_t, uint32_t)>& prepare_memory_read =
+        nullptr);
 
 // Whether the copy draw needs GetResolveRectanglesFromVertexShader.
 bool IsResolveUsingVertexShader(const RegisterFile& regs);
@@ -958,7 +963,9 @@ bool ResolveCopyDraw(const RegisterFile& regs, const Memory& memory,
                      const Shader* vertex_shader,
                      const ResolveRectangleFunction& resolve_rectangle,
                      uint32_t& written_address_out,
-                     uint32_t& written_length_out, bool* written_scaled_out);
+                     uint32_t& written_length_out, bool* written_scaled_out,
+                     const std::function<void(uint32_t, uint32_t)>&
+                         prepare_memory_read = nullptr);
 
 // Returns log2 of the copy destination texel size in bytes from a Resolve's
 // copy_dest_info (format already normalized) - the derivation GetResolveInfo
