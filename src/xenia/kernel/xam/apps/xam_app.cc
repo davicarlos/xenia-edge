@@ -228,15 +228,46 @@ X_HRESULT XamApp::DispatchMessageSync(uint32_t message, uint32_t buffer_ptr,
       // 0xAE0 bytes with the runtime version, the floor plane, six 448-byte
       // NUI_SKELETON_DATA from +48 (each starting with its tracking state:
       // 0 none, 1 position only, 2 tracked) and the frame's timestamp.
-      // Nothing consumes it yet; the tracking states are logged now and then
-      // to tell whether the tracker sees anyone.
+      // The Kinect Tuner draws the latest one; the tracking states are also
+      // logged now and then to tell whether the tracker sees anyone.
       // Sent with XMsgInProcessCall and a length of 0; the frame is 0xAE0
       // bytes by contract.
       constexpr uint32_t kSkeletonsOffset = 48;
       constexpr uint32_t kSkeletonSize = 448;
       constexpr uint32_t kSkeletonCount = 6;
+      // Within NUI_SKELETON_DATA: the tracking ID, the body position, the 20
+      // joint positions (float4 each) and their tracking states.
+      constexpr uint32_t kTrackingIdOffset = 4;
+      constexpr uint32_t kPositionOffset = 16;
+      constexpr uint32_t kJointsOffset = 32;
+      constexpr uint32_t kJointStatesOffset = 352;
       constexpr uint32_t kLogEveryFrames = 60;
       static uint32_t frame_count = 0;
+      if (buffer_ptr) {
+        static uint64_t snapshot_frame = 0;
+        NuiSkeletonSnapshot snapshot;
+        snapshot.frame_number = ++snapshot_frame;
+        auto load_float3 = [](const uint8_t* p) {
+          return std::array<float, 3>{xe::load_and_swap<float>(p),
+                                      xe::load_and_swap<float>(p + 4),
+                                      xe::load_and_swap<float>(p + 8)};
+        };
+        for (uint32_t i = 0; i < kSkeletonCount; ++i) {
+          const uint8_t* source = buffer + kSkeletonsOffset + i * kSkeletonSize;
+          NuiSkeletonSnapshot::Skeleton& skeleton = snapshot.skeletons[i];
+          skeleton.state = NuiSkeletonSnapshot::TrackingState(
+              xe::load_and_swap<uint32_t>(source));
+          skeleton.tracking_id =
+              xe::load_and_swap<uint32_t>(source + kTrackingIdOffset);
+          skeleton.position = load_float3(source + kPositionOffset);
+          for (uint32_t j = 0; j < NuiSkeletonSnapshot::kJointCount; ++j) {
+            skeleton.joints[j] = load_float3(source + kJointsOffset + j * 16);
+            skeleton.joint_states[j] = xe::load_and_swap<uint32_t>(
+                source + kJointStatesOffset + j * 4);
+          }
+        }
+        kernel_state_->nui()->SetSkeletonSnapshot(snapshot);
+      }
       if (buffer_ptr && ++frame_count % kLogEveryFrames == 0) {
         uint32_t tracked = 0, position_only = 0;
         for (uint32_t i = 0; i < kSkeletonCount; ++i) {

@@ -54,6 +54,16 @@ void NUIController::SetElevationAngle(int32_t angle) {
       std::clamp(angle, kElevationMinimum, kElevationMaximum);
 }
 
+void NUIController::SetSkeletonSnapshot(const NuiSkeletonSnapshot& snapshot) {
+  std::lock_guard<std::mutex> lock(skeleton_mutex_);
+  skeleton_snapshot_ = snapshot;
+}
+
+NuiSkeletonSnapshot NUIController::GetSkeletonSnapshot() const {
+  std::lock_guard<std::mutex> lock(skeleton_mutex_);
+  return skeleton_snapshot_;
+}
+
 uint32_t NUIController::NuiHudCheck(uint64_t tracking_id) {
   if (!GetNUIDataPtr() || !GetUnknown2() || !NuiInitialized()) {
     return X_ERROR_ACCESS_DENIED;

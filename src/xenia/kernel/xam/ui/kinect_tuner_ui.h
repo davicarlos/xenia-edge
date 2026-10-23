@@ -16,6 +16,7 @@
 #include <memory>
 #include <vector>
 
+#include "third_party/imgui/imgui.h"
 #include "xenia/kernel/xam/xam_ui.h"
 #include "xenia/ui/immediate_drawer.h"
 
@@ -43,6 +44,8 @@ class KinectTunerUI final : public XamGamepadDialog {
   static constexpr uint32_t kPreviewHeight = 240;
 
   void Refresh();
+  // Draws the game's skeletons over the depth preview at origin.
+  void DrawSkeletons(ImVec2 origin);
 
   bool has_opened_ = false;
   // Closing destroys the preview textures, so it waits for a frame that
@@ -65,6 +68,9 @@ class KinectTunerUI final : public XamGamepadDialog {
   float good_share_ = 0.0f;
   float far_share_ = 0.0f;
   int elevation_ = 0;
+  uint64_t skeleton_frame_number_ = 0;
+  uint32_t skeletons_tracked_ = 0;
+  uint32_t skeletons_position_only_ = 0;
 };
 
 }  // namespace ui

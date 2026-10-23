@@ -10,11 +10,39 @@
 #ifndef XENIA_KERNEL_NUI_H_
 #define XENIA_KERNEL_NUI_H_
 
+#include <array>
 #include <cstdint>
+#include <mutex>
+
 #include "xenia/base/byte_order.h"
 
 namespace xe {
 namespace kernel {
+
+// What the title's NUI runtime last reported of the skeletons it tracks, for
+// the host UI. Positions are in skeleton space: metres from the sensor, x to
+// the sensor's left, y up, z away from it.
+struct NuiSkeletonSnapshot {
+  static constexpr uint32_t kSkeletonCount = 6;
+  static constexpr uint32_t kJointCount = 20;
+  enum class TrackingState : uint32_t {
+    kNotTracked = 0,
+    kPositionOnly = 1,
+    kTracked = 2,
+  };
+  struct Skeleton {
+    TrackingState state = TrackingState::kNotTracked;
+    uint32_t tracking_id = 0;
+    // The whole body's position, for skeletons tracked by position only.
+    std::array<float, 3> position = {};
+    std::array<std::array<float, 3>, kJointCount> joints = {};
+    // 0 not tracked, 1 inferred, 2 tracked.
+    std::array<uint32_t, kJointCount> joint_states = {};
+  };
+  // Number of skeleton frames reported so far, 0 if none yet.
+  uint64_t frame_number = 0;
+  std::array<Skeleton, kSkeletonCount> skeletons = {};
+};
 
 class NUIController {
   /* NUI Notes:
@@ -54,7 +82,13 @@ class NUIController {
   int32_t GetElevationAngle() const { return elevation_angle_; }
   void SetElevationAngle(int32_t angle);
 
+  // The skeleton frame the title's runtime last sent to xam.
+  void SetSkeletonSnapshot(const NuiSkeletonSnapshot& snapshot);
+  NuiSkeletonSnapshot GetSkeletonSnapshot() const;
+
  private:
+  mutable std::mutex skeleton_mutex_;
+  NuiSkeletonSnapshot skeleton_snapshot_;
   uint32_t nui_data_ptr = 0x1;  // Meant to be a ptr to a larger structure
   char nui_unknown_2 = 0x1;     // exists at 0x50 within nui data structure
   uint32_t engaged_tracking_id =

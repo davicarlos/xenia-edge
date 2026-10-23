@@ -10,13 +10,17 @@
 #include "xenia/kernel/xam/ui/kinect_tuner_ui.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
+#include <utility>
 
 #include "third_party/imgui/imgui.h"
 #include "xenia/kernel/kernel_state.h"
 #include "xenia/kernel/nui.h"
 #include "xenia/kernel/xboxkrnl/xboxkrnl_private.h"
 #include "xenia/ui/imgui_drawer.h"
+
+DECLARE_bool(kinect_mirror);
 
 namespace xe {
 namespace kernel {
@@ -59,7 +63,96 @@ void UnpackDepth(const std::vector<uint8_t>& packed,
   }
 }
 
+// NUI_SKELETON_POSITION_INDEX pairs joined by bones.
+constexpr std::pair<uint8_t, uint8_t> kBones[] = {
+    {0, 1},   {1, 2},   {2, 3},                       // Spine and head.
+    {2, 4},   {4, 5},   {5, 6},   {6, 7},             // Left arm.
+    {2, 8},   {8, 9},   {9, 10},  {10, 11},           // Right arm.
+    {0, 12},  {12, 13}, {13, 14}, {14, 15},           // Left leg.
+    {0, 16},  {16, 17}, {17, 18}, {18, 19},           // Right leg.
+};
+// NUI_CAMERA_SKELETON_TO_DEPTH_IMAGE_MULTIPLIER_320x240: pixels of a 320x240
+// depth image per metre of x or y at a depth of 1 metre.
+constexpr float kSkeletonToDepth320 = 285.63f;
+constexpr ImU32 kSkeletonColors[NuiSkeletonSnapshot::kSkeletonCount] = {
+    IM_COL32(255, 230, 60, 255),  IM_COL32(80, 220, 255, 255),
+    IM_COL32(255, 120, 220, 255), IM_COL32(140, 255, 120, 255),
+    IM_COL32(255, 160, 80, 255),  IM_COL32(200, 160, 255, 255)};
+
 }  // namespace
+
+void KinectTunerUI::DrawSkeletons(ImVec2 origin) {
+  const NuiSkeletonSnapshot snapshot =
+      kernel_state()->nui()->GetSkeletonSnapshot();
+  skeleton_frame_number_ = snapshot.frame_number;
+  skeletons_tracked_ = 0;
+  skeletons_position_only_ = 0;
+  if (!snapshot.frame_number) {
+    return;
+  }
+  // The preview is the sensor's own image; the game's is flipped when
+  // kinect_mirror is on, and the skeletons are fitted to the game's.
+  const bool mirrored = cvars::kinect_mirror;
+  auto project = [&](const std::array<float, 3>& p, ImVec2& out) {
+    if (p[2] <= 0.1f) {
+      return false;
+    }
+    float u = kSkeletonToDepth320 * p[0] / p[2];
+    if (mirrored) {
+      u = -u;
+    }
+    out = ImVec2(origin.x + float(kPreviewWidth) * 0.5f + u,
+                 origin.y + float(kPreviewHeight) * 0.5f -
+                     kSkeletonToDepth320 * p[1] / p[2]);
+    return true;
+  };
+  ImDrawList* draw_list = ImGui::GetWindowDrawList();
+  draw_list->PushClipRect(
+      origin, ImVec2(origin.x + kPreviewWidth, origin.y + kPreviewHeight),
+      true);
+  for (uint32_t i = 0; i < NuiSkeletonSnapshot::kSkeletonCount; ++i) {
+    const NuiSkeletonSnapshot::Skeleton& skeleton = snapshot.skeletons[i];
+    const ImU32 color = kSkeletonColors[i];
+    const ImU32 inferred_color = (color & 0x00FFFFFF) | 0x80000000;
+    ImVec2 point;
+    if (skeleton.state ==
+        NuiSkeletonSnapshot::TrackingState::kPositionOnly) {
+      ++skeletons_position_only_;
+      if (project(skeleton.position, point)) {
+        draw_list->AddCircle(point, 10.0f, color, 16, 2.0f);
+      }
+      continue;
+    }
+    if (skeleton.state != NuiSkeletonSnapshot::TrackingState::kTracked) {
+      continue;
+    }
+    ++skeletons_tracked_;
+    std::array<ImVec2, NuiSkeletonSnapshot::kJointCount> points;
+    std::array<bool, NuiSkeletonSnapshot::kJointCount> visible;
+    for (uint32_t j = 0; j < NuiSkeletonSnapshot::kJointCount; ++j) {
+      visible[j] =
+          skeleton.joint_states[j] && project(skeleton.joints[j], points[j]);
+    }
+    for (const auto& [a, b] : kBones) {
+      if (!visible[a] || !visible[b]) {
+        continue;
+      }
+      // A bone is only as sure as its least sure end.
+      const bool both_tracked =
+          skeleton.joint_states[a] == 2 && skeleton.joint_states[b] == 2;
+      draw_list->AddLine(points[a], points[b],
+                         both_tracked ? color : inferred_color, 3.0f);
+    }
+    for (uint32_t j = 0; j < NuiSkeletonSnapshot::kJointCount; ++j) {
+      if (visible[j]) {
+        draw_list->AddCircleFilled(
+            points[j], j == 3 ? 6.0f : 3.5f,
+            skeleton.joint_states[j] == 2 ? color : inferred_color);
+      }
+    }
+  }
+  draw_list->PopClipRect();
+}
 
 KinectTunerUI::KinectTunerUI(xe::ui::ImGuiDrawer* imgui_drawer,
                              xe::hid::InputSystem* input_system)
@@ -187,6 +280,7 @@ void KinectTunerUI::OnDraw(ImGuiIO& io) {
     } else {
       ImGui::Dummy(ImVec2(float(kPreviewWidth), float(kPreviewHeight)));
     }
+    DrawSkeletons(ImGui::GetItemRectMin());
     ImGui::SameLine();
     if (color_texture_) {
       ImGui::Image(reinterpret_cast<ImTextureID>(color_texture_.get()),
@@ -203,6 +297,12 @@ void KinectTunerUI::OnDraw(ImGuiIO& io) {
     ImGui::SameLine();
     ImGui::TextColored(ImVec4(0.5f, 0.6f, 1.0f, 1.0f),
                        "  Farther: %3.0f%%", far_share_ * 100.0f);
+    if (!skeleton_frame_number_) {
+      ImGui::TextDisabled("The game hasn't reported any skeleton yet.");
+    } else {
+      ImGui::Text("Players tracked by the game: %u (%u by position only)",
+                  skeletons_tracked_, skeletons_position_only_);
+    }
     ImGui::TextWrapped(
         "Stand 1.8 to 3 m from the sensor, facing it, with your whole body "
         "including your feet in the depth image. Green is the range the "
