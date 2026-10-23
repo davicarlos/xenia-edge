@@ -90,8 +90,9 @@ void KinectTunerUI::DrawSkeletons(ImVec2 origin) {
   if (!snapshot.frame_number) {
     return;
   }
-  // The preview is the sensor's own image; the game's is flipped when
-  // kinect_mirror is on, and the skeletons are fitted to the game's.
+  // The preview is the sensor's image shown as a mirror, which skeleton x
+  // (to the sensor's left) maps onto directly. The game's image is flipped
+  // when kinect_mirror is on, and the skeletons are fitted to the game's.
   const bool mirrored = cvars::kinect_mirror;
   auto project = [&](const std::array<float, 3>& p, ImVec2& out) {
     if (p[2] <= 0.1f) {
@@ -173,7 +174,9 @@ void KinectTunerUI::Refresh() {
     uint32_t near_count = 0, good_count = 0, far_count = 0;
     for (uint32_t y = 0; y < kPreviewHeight; ++y) {
       for (uint32_t x = 0; x < kPreviewWidth; ++x) {
-        const uint16_t raw = depth[(y * 2) * kFrameWidth + x * 2];
+        // Shown as a mirror, like the skeletons drawn over it.
+        const uint16_t raw =
+            depth[(y * 2) * kFrameWidth + (kFrameWidth - 2 - x * 2)];
         uint8_t* texel = &depth_rgba_[(y * kPreviewWidth + x) * 4];
         texel[3] = 255;
         if (raw == 0 || raw >= kNoDepthRaw) {
@@ -222,9 +225,11 @@ void KinectTunerUI::Refresh() {
       const uint8_t* row1 = row0 + kFrameWidth;
       for (uint32_t x = 0; x < kPreviewWidth; ++x) {
         uint8_t* texel = &color_rgba_[(y * kPreviewWidth + x) * 4];
-        texel[0] = row0[x * 2 + 1];
-        texel[1] = uint8_t((uint32_t(row0[x * 2]) + row1[x * 2 + 1]) / 2);
-        texel[2] = row1[x * 2];
+        // Mirrored like the depth preview; cells stay aligned to the pattern.
+        const uint32_t cell = kFrameWidth - 2 - x * 2;
+        texel[0] = row0[cell + 1];
+        texel[1] = uint8_t((uint32_t(row0[cell]) + row1[cell + 1]) / 2);
+        texel[2] = row1[cell];
         texel[3] = 255;
       }
     }
