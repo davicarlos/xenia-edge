@@ -7,9 +7,13 @@
  ******************************************************************************
  */
 
+#include <cstring>
+
 #include "xenia/apu/audio_system.h"
 #include "xenia/emulator.h"
 #include "xenia/kernel/kernel_state.h"
+#include "xenia/kernel/nui.h"
+#include "xenia/kernel/nui_audio.h"
 #include "xenia/kernel/util/shim_utils.h"
 #include "xenia/kernel/xboxkrnl/xboxkrnl_private.h"
 #include "xenia/xbox.h"
@@ -154,6 +158,51 @@ dword_result_t XAudioSubmitRenderDriverFrame_entry(lpunknown_t driver_ptr,
   return X_ERROR_SUCCESS;
 }
 DECLARE_XBOXKRNL_EXPORT2(XAudioSubmitRenderDriverFrame, kAudio, kImplemented,
+                         kHighFrequency);
+
+// The echo-cancellation (MEC) client a Kinect title's NUI audio registers;
+// NuiAudio calls it every render driver tic.
+dword_result_t XAudioRegisterRenderDriverMECClient_entry(
+    lpdword_t callback_ptr, lpdword_t handle_ptr) {
+  if (!callback_ptr || !callback_ptr[0] || !handle_ptr) {
+    return X_E_INVALIDARG;
+  }
+  uint32_t handle = 0;
+  const X_STATUS result =
+      kernel_state()->nui()->audio()->RegisterMecClient(
+          callback_ptr[0], callback_ptr[1], &handle);
+  if (XFAILED(result)) {
+    return result;
+  }
+  *handle_ptr = handle;
+  return X_ERROR_SUCCESS;
+}
+DECLARE_XBOXKRNL_EXPORT1(XAudioRegisterRenderDriverMECClient, kAudio,
+                         kSketchy);
+
+dword_result_t XAudioUnregisterRenderDriverMECClient_entry(dword_t handle) {
+  kernel_state()->nui()->audio()->UnregisterMecClient(handle);
+  return X_ERROR_SUCCESS;
+}
+DECLARE_XBOXKRNL_EXPORT1(XAudioUnregisterRenderDriverMECClient, kAudio,
+                         kSketchy);
+
+dword_result_t XAudioGetRenderDriverTic_entry() {
+  return kernel_state()->nui()->audio()->render_tic();
+}
+DECLARE_XBOXKRNL_EXPORT2(XAudioGetRenderDriverTic, kAudio, kSketchy,
+                         kHighFrequency);
+
+dword_result_t XAudioCaptureRenderDriverFrame_entry(dword_t handle,
+                                                    lpvoid_t buffer_ptr) {
+  // The played frame the title cancels from the microphones. Xenia doesn't
+  // capture its output, so the echo reference is silence.
+  if (buffer_ptr) {
+    std::memset(buffer_ptr, 0, NuiAudio::kRenderFrameBytes);
+  }
+  return X_ERROR_SUCCESS;
+}
+DECLARE_XBOXKRNL_EXPORT2(XAudioCaptureRenderDriverFrame, kAudio, kSketchy,
                          kHighFrequency);
 
 }  // namespace xboxkrnl

@@ -24,6 +24,7 @@
 #include "xenia/base/filesystem.h"
 #include "xenia/base/string.h"
 #include "xenia/base/threading.h"
+#include "xenia/hid/kinect/usb_audio.h"
 #include "xenia/hid/kinect/usb_camera.h"
 
 DEFINE_int32(seconds, 3, "How long to stream before exiting.", "Kinect");
@@ -40,6 +41,28 @@ DEFINE_path(depth_pgm, "",
             "kinect_dump_depth_path or dump_prefix write them, with the "
             "connected camera's calibration.",
             "Kinect");
+DEFINE_path(audio_firmware, "",
+            "Upload this audio firmware (audios.bin) to the sensor, as "
+            "kinect_audio_firmware_path does, and exit.",
+            "Kinect");
+DEFINE_bool(motor_test, false,
+            "Instead of streaming, set the LED to led, tilt the motor to tilt "
+            "degrees and print the motor state for seconds. Needs the audio "
+            "firmware running.",
+            "Kinect");
+DEFINE_path(audio_wav, "",
+            "Instead of streaming the camera, record the microphones for "
+            "seconds into <path>_processed.wav (the sensor's mix) and "
+            "<path>_microphones.wav (the four microphones). Needs the audio "
+            "firmware running.",
+            "Kinect");
+DEFINE_int32(tilt, 0, "With motor_test: tilt angle in degrees.", "Kinect");
+DEFINE_int32(stop_after_ms, -1,
+             "With motor_test: stop the movement this long after starting it.",
+             "Kinect");
+DEFINE_int32(led, 3,
+             "With motor_test: 1 off, 2 blinking green, 3 green, 4 red.",
+             "Kinect");
 DEFINE_string(dump_prefix, "",
               "Write the last frames as <prefix>_depth.pgm (16-bit, raw 11-bit "
               "disparity) and <prefix>_color.pgm (8-bit Bayer).",
@@ -50,6 +73,34 @@ namespace hid {
 namespace kinect {
 
 namespace {
+
+bool WriteWav(const std::filesystem::path& path, uint16_t channels,
+              uint16_t bits, const std::vector<uint8_t>& samples) {
+  FILE* file = xe::filesystem::OpenFile(path, "wb");
+  if (!file) {
+    return false;
+  }
+  constexpr uint32_t kRate = 16000;
+  const uint32_t block = channels * bits / 8;
+  const uint32_t data_bytes = uint32_t(samples.size());
+  auto put32 = [file](uint32_t v) { std::fwrite(&v, 4, 1, file); };
+  auto put16 = [file](uint16_t v) { std::fwrite(&v, 2, 1, file); };
+  std::fwrite("RIFF", 1, 4, file);
+  put32(36 + data_bytes);
+  std::fwrite("WAVEfmt ", 1, 8, file);
+  put32(16);
+  put16(1);
+  put16(channels);
+  put32(kRate);
+  put32(kRate * block);
+  put16(uint16_t(block));
+  put16(bits);
+  std::fwrite("data", 1, 4, file);
+  put32(data_bytes);
+  std::fwrite(samples.data(), 1, samples.size(), file);
+  std::fclose(file);
+  return true;
+}
 
 constexpr uint32_t kWidth = 640;
 constexpr uint32_t kHeight = 480;
@@ -135,6 +186,96 @@ bool WritePgm(const std::string& path, const void* pixels, size_t bytes,
 
 int kinect_camera_test_main(const std::vector<std::string>& args) {
   static_cast<void>(args);
+  if (!cvars::audio_firmware.empty()) {
+    std::vector<uint8_t> image;
+    if (FILE* file = xe::filesystem::OpenFile(cvars::audio_firmware, "rb")) {
+      uint8_t buffer[0x4000];
+      size_t read;
+      while ((read = std::fread(buffer, 1, sizeof(buffer), file)) > 0) {
+        image.insert(image.end(), buffer, buffer + read);
+      }
+      std::fclose(file);
+    }
+    const bool running = LoadAudioFirmware(image);
+    fmt::print("Audio firmware {}.\n", running ? "running" : "not running");
+    return running ? 0 : 1;
+  }
+  if (!cvars::audio_wav.empty()) {
+    auto audio = UsbAudio::Open();
+    if (!audio || !audio->StartMicrophones(nullptr)) {
+      fmt::print(stderr, "The Kinect microphones could not be started.\n");
+      return 1;
+    }
+    std::vector<uint8_t> processed, microphones;
+    uint64_t next = 0;
+    uint16_t last = 0;
+    bool have_last = false;
+    uint32_t windows = 0, gaps = 0;
+    const auto end = std::chrono::steady_clock::now() +
+                     std::chrono::seconds(cvars::seconds);
+    while (std::chrono::steady_clock::now() < end) {
+      UsbAudio::MicrophoneWindow window;
+      if (!audio->ReadMicrophoneWindow(next, window)) {
+        xe::threading::Sleep(std::chrono::milliseconds(4));
+        continue;
+      }
+      if (have_last && uint16_t(window.window - last) != 3) {
+        ++gaps;
+      }
+      last = window.window;
+      have_last = true;
+      ++windows;
+      auto* p = reinterpret_cast<const uint8_t*>(window.processed);
+      processed.insert(processed.end(), p, p + sizeof(window.processed));
+      for (uint32_t i = 0; i < UsbAudio::kSamplesPerWindow; ++i) {
+        for (uint32_t m = 0; m < UsbAudio::kMicrophoneCount; ++m) {
+          auto* q =
+              reinterpret_cast<const uint8_t*>(&window.microphones[m][i]);
+          microphones.insert(microphones.end(), q, q + 4);
+        }
+      }
+    }
+    audio->StopMicrophones();
+    const std::string prefix = xe::path_to_utf8(cvars::audio_wav);
+    WriteWav(prefix + "_processed.wav", 1, 16, processed);
+    WriteWav(prefix + "_microphones.wav", UsbAudio::kMicrophoneCount, 32,
+             microphones);
+    fmt::print("{} windows ({:.1f} s), {} gaps\n", windows,
+               windows * 0.016, gaps);
+    return 0;
+  }
+  if (cvars::motor_test) {
+    auto motor = UsbAudio::Open();
+    if (!motor) {
+      fmt::print(stderr, "No Kinect motor could be opened.\n");
+      return 1;
+    }
+    fmt::print("LED {}: {}\n", cvars::led,
+               motor->SetLed(UsbAudio::Led(cvars::led)) ? "ok" : "failed");
+    fmt::print("Tilt {}: {}\n", cvars::tilt,
+               motor->SetTiltAngle(cvars::tilt) ? "ok" : "failed");
+    const auto start = std::chrono::steady_clock::now();
+    const auto end = start + std::chrono::seconds(cvars::seconds);
+    bool stopped = cvars::stop_after_ms < 0;
+    while (std::chrono::steady_clock::now() < end) {
+      if (!stopped && std::chrono::steady_clock::now() - start >=
+                          std::chrono::milliseconds(cvars::stop_after_ms)) {
+        stopped = true;
+        fmt::print("Stop: {}\n", motor->StopMovement() ? "ok" : "failed");
+      }
+      UsbAudio::State state;
+      if (motor->ReadState(state)) {
+        fmt::print("angle {:4} accel {:5} {:5} {:5} flags {:08X}\n",
+                   state.tilt_angle, state.accelerometer[0],
+                   state.accelerometer[1], state.accelerometer[2],
+                   state.flags);
+      } else {
+        fmt::print("state read failed\n");
+      }
+      xe::threading::Sleep(std::chrono::milliseconds(100));
+    }
+    return 0;
+  }
   std::atomic<uint32_t> callbacks = 0;
   auto camera = UsbCamera::Open(cvars::use_usbdk, [&]() { ++callbacks; });
   if (!camera) {

@@ -11,12 +11,23 @@
 
 #include <algorithm>
 #include "xenia/base/assert.h"
+#include "xenia/base/logging.h"
+#include "xenia/hid/kinect/usb_audio.h"
+#include "xenia/kernel/nui_audio.h"
 #include "xenia/kernel/kernel_state.h"
 #include "xenia/xbox.h"
 
 namespace xe {
 namespace kernel {
-NUIController::NUIController() {};
+namespace {
+constexpr auto kTiltStatePeriod = std::chrono::milliseconds(50);
+// Motor status flags meaning it's moving or settling.
+constexpr uint32_t kMotorMovingFlags = 0x3;
+}  // namespace
+
+NUIController::NUIController() : audio_(std::make_unique<NuiAudio>()) {}
+
+NUIController::~NUIController() = default;
 bool NUIController::NuiInitialized() {
   // TODO(boma): Proper device readiness.
   return (KernelState::shared()->xconfig()->ReadSetting<uint32_t>(
@@ -52,6 +63,54 @@ void NUIController::SetSessionId(uint64_t id) { session_id = id; }
 void NUIController::SetElevationAngle(int32_t angle) {
   elevation_angle_ =
       std::clamp(angle, kElevationMinimum, kElevationMaximum);
+  std::lock_guard<std::mutex> lock(motor_mutex_);
+  if (!motor_) {
+    return;
+  }
+  if (motor_->SetTiltAngle(elevation_angle_)) {
+    XELOGI("NUI: tilting the Kinect to {} degrees", elevation_angle_);
+  } else {
+    XELOGW("NUI: the Kinect motor did not accept tilt {}", elevation_angle_);
+  }
+}
+
+void NUIController::StopElevationMovement() {
+  std::lock_guard<std::mutex> lock(motor_mutex_);
+  if (motor_ && !motor_->StopMovement()) {
+    XELOGW("NUI: the Kinect motor did not stop");
+  }
+}
+
+void NUIController::SetMotor(std::unique_ptr<hid::kinect::UsbAudio> motor) {
+  std::lock_guard<std::mutex> lock(motor_mutex_);
+  audio_->SetDevice(motor.get());
+  motor_ = std::move(motor);
+  tilt_state_time_ = {};
+  if (motor_) {
+    motor_->SetLed(hid::kinect::UsbAudio::Led::kGreen);
+    XELOGI("NUI: using the Kinect tilt motor");
+  }
+}
+
+bool NUIController::GetTiltState(TiltState& state) {
+  std::lock_guard<std::mutex> lock(motor_mutex_);
+  if (!motor_) {
+    return false;
+  }
+  const auto now = std::chrono::steady_clock::now();
+  if (now - tilt_state_time_ >= kTiltStatePeriod) {
+    hid::kinect::UsbAudio::State motor_state;
+    if (!motor_->ReadState(motor_state)) {
+      return false;
+    }
+    for (size_t i = 0; i < 3; ++i) {
+      tilt_state_.gravity[i] = motor_state.accelerometer[i];
+    }
+    tilt_state_.flags = motor_state.flags & kMotorMovingFlags;
+    tilt_state_time_ = now;
+  }
+  state = tilt_state_;
+  return true;
 }
 
 void NUIController::SetSkeletonSnapshot(const NuiSkeletonSnapshot& snapshot) {

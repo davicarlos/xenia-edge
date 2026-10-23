@@ -27,10 +27,9 @@ namespace ui {
 
 // The Kinect Tuner that XamShowNuiTroubleshooterUI opens: shows what the
 // sensor sees, says whether the player stands at a distance the skeleton
-// tracker can use, and sets the camera elevation the title is told about.
-// The Kinect for Xbox 360 model 1473 drives its motor through the audio
-// device, which needs Microsoft's audio firmware, so the elevation is the
-// simulated motor's and the sensor itself doesn't tilt.
+// tracker can use, tilts the sensor (or, without its motor, sets the
+// elevation the title is told about) and shows the microphone level the title
+// gets.
 class KinectTunerUI final : public XamGamepadDialog {
  public:
   KinectTunerUI(xe::ui::ImGuiDrawer* imgui_drawer,

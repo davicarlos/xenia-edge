@@ -29,12 +29,16 @@
 #include "xenia/base/mutex.h"
 #include "xenia/base/threading.h"
 #include "xenia/cpu/processor.h"
+#include "xenia/hid/kinect/usb_audio.h"
 #include "xenia/hid/kinect/usb_camera.h"
 #include "xenia/kernel/kernel_state.h"
 #include "xenia/kernel/util/shim_utils.h"
 #include "xenia/kernel/xboxkrnl/xboxkrnl_private.h"
 #include "xenia/kernel/xthread.h"
 #include "xenia/memory.h"
+#include "xenia/vfs/devices/xcontent_container_device.h"
+#include "xenia/vfs/entry.h"
+#include "xenia/vfs/file.h"
 #include "xenia/xbox.h"
 
 DEFINE_bool(allow_kinect_camera, false,
@@ -57,6 +61,18 @@ DEFINE_path(kinect_replay_path, "",
             "Play the Kinect recording in this directory (made with "
             "xenia-kinect-camera-test --record_dir) as the camera instead of "
             "a connected Kinect.",
+            "HID");
+
+DEFINE_path(kinect_audio_firmware_path, "",
+            "Microsoft's Kinect audio firmware to upload to the sensor when "
+            "the camera opens: audios.bin, or the Xbox 360 system update "
+            "package holding it ($SystemUpdate/FFFE07DF00000001). Model "
+            "1473's motor, LED and accelerometer need it.",
+            "HID");
+
+DEFINE_path(kinect_record_path, "",
+            "Record every frame handed to the title into this directory, in "
+            "the format kinect_replay_path plays back.",
             "HID");
 
 DEFINE_path(kinect_dump_depth_path, "",
@@ -216,6 +232,45 @@ struct PendingRequest {
   std::vector<PendingRequest> cancelled_reads;
 };
 
+// Reads the firmware from audios.bin itself or from the system update package
+// it ships in.
+std::vector<uint8_t> ReadAudioFirmware(const std::filesystem::path& path) {
+  std::vector<uint8_t> image;
+  auto header = vfs::XContentContainerDevice::ReadContainerHeader(path);
+  if (header && header->content_header.is_magic_valid()) {
+    auto device = vfs::XContentContainerDevice::CreateContentDevice("", path);
+    if (!device || !device->Initialize()) {
+      return image;
+    }
+    // Paths resolve through Device, as the file system does it.
+    vfs::Entry* entry =
+        static_cast<vfs::Device&>(*device).ResolvePath("audios.bin");
+    vfs::File* file = nullptr;
+    if (!entry ||
+        entry->Open(xe::filesystem::FileAccess::kFileReadData, &file) !=
+            X_STATUS_SUCCESS) {
+      return image;
+    }
+    image.resize(entry->size());
+    size_t bytes_read = 0;
+    if (file->ReadSync(image, 0, &bytes_read) != X_STATUS_SUCCESS ||
+        bytes_read != image.size()) {
+      image.clear();
+    }
+    file->Destroy();
+    return image;
+  }
+  if (FILE* file = xe::filesystem::OpenFile(path, "rb")) {
+    uint8_t buffer[0x4000];
+    size_t read;
+    while ((read = std::fread(buffer, 1, sizeof(buffer), file)) > 0) {
+      image.insert(image.end(), buffer, buffer + read);
+    }
+    std::fclose(file);
+  }
+  return image;
+}
+
 class CameraDevice {
  public:
   explicit CameraDevice(KernelState* kernel_state)
@@ -224,6 +279,20 @@ class CameraDevice {
       camera_ = hid::kinect::UsbCamera::OpenRecording(
           cvars::kinect_replay_path, [this]() { Notify(); });
     } else if (cvars::allow_kinect_camera) {
+      if (!cvars::kinect_audio_firmware_path.empty()) {
+        const std::vector<uint8_t> image =
+            ReadAudioFirmware(cvars::kinect_audio_firmware_path);
+        if (image.empty()) {
+          XELOGE("PsCamDeviceRequest: cannot read the Kinect audio firmware "
+                 "from {}",
+                 xe::path_to_utf8(cvars::kinect_audio_firmware_path));
+        } else {
+          XELOGI("PsCamDeviceRequest: Kinect audio firmware is {} bytes",
+                 image.size());
+          hid::kinect::LoadAudioFirmware(image);
+        }
+      }
+      kernel_state->nui()->SetMotor(hid::kinect::UsbAudio::Open());
       camera_ = hid::kinect::UsbCamera::Open(cvars::kinect_use_usbdk,
                                              [this]() { Notify(); });
     }
@@ -579,9 +648,13 @@ class CameraDevice {
       return true;
     }
     if (depth) {
+      Record();
       UnpackDepth(frame_, Guest<uint8_t>(buffer), frame_bytes / 2);
       DumpDepth(Guest<uint8_t>(buffer), frame_bytes);
     } else {
+      if (!cvars::kinect_record_path.empty()) {
+        record_color_ = frame_;
+      }
       if (cvars::kinect_mirror) {
         // Pairs of pixels are reversed, keeping the Bayer pattern in place.
         uint8_t* dest = Guest<uint8_t>(buffer);
@@ -613,6 +686,36 @@ class CameraDevice {
     }
     Complete(done);
     return true;
+  }
+
+  // Writes the depth frame in frame_, with the latest color frame, to
+  // kinect_record_path. Starts once a color frame has arrived, since playback
+  // expects both for every frame.
+  void Record() {
+    if (cvars::kinect_record_path.empty() || record_color_.empty() ||
+        record_failed_) {
+      return;
+    }
+    const std::filesystem::path& directory = cvars::kinect_record_path;
+    if (!record_index_) {
+      std::error_code error;
+      std::filesystem::create_directories(directory, error);
+      if (!hid::kinect::WriteRecordingCalibration(directory,
+                                                  camera_->calibration())) {
+        XELOGE("PsCamDeviceRequest: can't record to {}",
+               xe::path_to_utf8(directory));
+        record_failed_ = true;
+        return;
+      }
+      XELOGI("PsCamDeviceRequest: recording to {}",
+             xe::path_to_utf8(directory));
+    }
+    if (!hid::kinect::WriteRecordingFrame(directory, record_index_, frame_,
+                                          record_color_)) {
+      record_failed_ = true;
+      return;
+    }
+    ++record_index_;
   }
 
   // Writes the unpacked depth frame (big-endian 16-bit words, as the title
@@ -726,6 +829,9 @@ class CameraDevice {
   uint8_t requested_generation_ = 0;
   std::atomic<uint8_t> settings_generation_ = 0;
   std::vector<uint8_t> frame_;
+  std::vector<uint8_t> record_color_;
+  uint32_t record_index_ = 0;
+  bool record_failed_ = false;
   std::chrono::steady_clock::time_point last_dump_;
   uint64_t logged_codes_ = 0;
   bool logged_depth_frame_ = false;

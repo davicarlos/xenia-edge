@@ -14,6 +14,7 @@
 #include "xenia/emulator.h"
 #include "xenia/kernel/kernel_state.h"
 #include "xenia/kernel/nui.h"
+#include "xenia/kernel/nui_audio.h"
 #include "xenia/kernel/util/shim_utils.h"
 #include "xenia/kernel/xam/xam_private.h"
 #include "xenia/xbox.h"
@@ -63,7 +64,14 @@ dword_result_t XamNuiGetDeviceStatus_entry(
 
   const bool kinect_initialized = kernel_state()->nui()->NuiInitialized();
 
-  status_ptr->status_bits = kinect_initialized;
+  // Bit 0: the sensor is set up. Bit 1: its microphone array is there, which
+  // titles check before starting their NUI audio.
+  uint32_t status_bits = kinect_initialized ? 0x1 : 0x0;
+  if (kinect_initialized &&
+      kernel_state()->nui()->audio()->microphones_available()) {
+    status_bits |= 0x2;
+  }
+  status_ptr->status_bits = status_bits;
   return kinect_initialized ? X_ERROR_SUCCESS : 0xC0050006;
 }
 DECLARE_XAM_EXPORT1(XamNuiGetDeviceStatus, kNone, kStub);
@@ -149,21 +157,27 @@ dword_result_t XamNuiCameraTiltGetStatus_entry(
   if (!kernel_state()->nui()->NuiInitialized()) {
     return X_E_DEVICE_NOT_CONNECTED;
   }
-  // A stationary camera at the elevation the title last set: gravity in the
-  // Kinect accelerometer units libfreenect uses (1 g is about 819), tilted
-  // around the X axis, and no movement flags.
-  // TODO(knuckleslee): Read the accelerometer and motor through the Kinect
-  // motor device (DetroitDeviceRequest).
-  constexpr double kAccelerometerOneG = 819.0;
-  const double elevation =
-      kernel_state()->nui()->GetElevationAngle() * M_PI / 180.0;
   std::memset(tilt_status->unknown_08, 0, sizeof(tilt_status->unknown_08));
-  tilt_status->gravity_long_avg[0] = 0;
-  tilt_status->gravity_long_avg[1] =
-      static_cast<int32_t>(std::lround(kAccelerometerOneG * std::cos(elevation)));
-  tilt_status->gravity_long_avg[2] =
-      static_cast<int32_t>(std::lround(kAccelerometerOneG * std::sin(elevation)));
-  tilt_status->flags = X_TILT_STATUS_FLAGS(0);
+  NUIController::TiltState tilt_state;
+  if (kernel_state()->nui()->GetTiltState(tilt_state)) {
+    for (size_t i = 0; i < 3; ++i) {
+      tilt_status->gravity_long_avg[i] = tilt_state.gravity[i];
+    }
+    tilt_status->flags = X_TILT_STATUS_FLAGS(tilt_state.flags);
+  } else {
+    // Without the motor, a stationary camera at the elevation the title last
+    // set: gravity in the Kinect accelerometer units (1 g is about 819),
+    // tilted around the X axis.
+    constexpr double kAccelerometerOneG = 819.0;
+    const double elevation =
+        kernel_state()->nui()->GetElevationAngle() * M_PI / 180.0;
+    tilt_status->gravity_long_avg[0] = 0;
+    tilt_status->gravity_long_avg[1] = static_cast<int32_t>(
+        std::lround(kAccelerometerOneG * std::cos(elevation)));
+    tilt_status->gravity_long_avg[2] = static_cast<int32_t>(
+        std::lround(kAccelerometerOneG * std::sin(elevation)));
+    tilt_status->flags = X_TILT_STATUS_FLAGS(0);
+  }
   std::memset(tilt_status->unknown_30, 0, sizeof(tilt_status->unknown_30));
   return X_ERROR_SUCCESS;
 }
@@ -178,8 +192,8 @@ dword_result_t XamNuiCameraElevationGetAngle_entry(lpdword_t elevation_angle,
   if (XFAILED(result)) {
     return result;
   }
-  // The angle in degrees from the gravity direction, which is the elevation
-  // the simulated motor is at; titles poll this until it succeeds.
+  // The angle in degrees from the gravity direction, which is the camera's
+  // elevation; titles poll this until it succeeds.
   const double angle_radians =
       std::atan2(double(int32_t(tilt_status.gravity_long_avg[2])),
                  double(int32_t(tilt_status.gravity_long_avg[1])));
@@ -200,9 +214,8 @@ dword_result_t XamNuiCameraElevationSetAngle_entry(int_t elevation_angle) {
   if (!kernel_state()->nui()->NuiInitialized()) {
     return X_E_DEVICE_NOT_CONNECTED;
   }
-  // The motor moves at once; a title that polls XamNuiCameraElevationGetAngle
-  // for the movement to end sees the new angle on its next call.
-  // TODO(knuckleslee): Drive the Kinect motor through DetroitDeviceRequest.
+  // Moves the Kinect motor when the host has it; otherwise the simulated
+  // camera is at the new angle on the title's next XamNuiCameraTiltGetStatus.
   kernel_state()->nui()->SetElevationAngle(int32_t(elevation_angle));
   return X_ERROR_SUCCESS;
 }
@@ -212,7 +225,8 @@ dword_result_t XamNuiCameraElevationStopMovement_entry() {
   if (!kernel_state()->nui()->NuiInitialized()) {
     return X_E_DEVICE_NOT_CONNECTED;
   }
-  // The simulated motor never moves, so there's nothing to stop.
+  // Without the Kinect motor the simulated camera never moves.
+  kernel_state()->nui()->StopElevationMovement();
   return X_ERROR_SUCCESS;
 }
 DECLARE_XAM_EXPORT1(XamNuiCameraElevationStopMovement, kNone, kSketchy);

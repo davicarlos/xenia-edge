@@ -7,6 +7,7 @@
  ******************************************************************************
  */
 
+#include "xenia/hid/kinect/usb_audio.h"
 #include "xenia/hid/kinect/usb_camera.h"
 
 namespace xe {
@@ -19,6 +20,12 @@ std::unique_ptr<UsbCamera> UsbCamera::Open(bool use_usbdk,
                                            std::function<void()> on_frame) {
   return nullptr;
 }
+
+bool LoadAudioFirmware(const std::vector<uint8_t>& image) {
+  return false;
+}
+
+std::unique_ptr<UsbAudio> UsbAudio::Open() { return nullptr; }
 
 }  // namespace kinect
 }  // namespace hid

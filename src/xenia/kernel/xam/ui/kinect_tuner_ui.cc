@@ -12,11 +12,13 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstdio>
 #include <utility>
 
 #include "third_party/imgui/imgui.h"
 #include "xenia/kernel/kernel_state.h"
 #include "xenia/kernel/nui.h"
+#include "xenia/kernel/nui_audio.h"
 #include "xenia/kernel/xboxkrnl/xboxkrnl_private.h"
 #include "xenia/ui/imgui_drawer.h"
 
@@ -315,14 +317,52 @@ void KinectTunerUI::OnDraw(ImGuiIO& io) {
   }
 
   ImGui::Separator();
-  ImGui::Text("Camera elevation reported to the game");
-  if (ImGui::SliderInt("degrees", &elevation_, NUIController::kElevationMinimum,
-                       NUIController::kElevationMaximum)) {
-    kernel_state()->nui()->SetElevationAngle(elevation_);
+  NUIController::TiltState tilt;
+  if (kernel_state()->nui()->GetTiltState(tilt)) {
+    // Gravity from the accelerometer gives the sensor's real elevation.
+    const float angle = std::atan2(float(tilt.gravity[2]),
+                                   float(tilt.gravity[1])) *
+                        180.0f / 3.14159265f;
+    ImGui::Text("Sensor elevation: %+.0f degrees%s", angle,
+                tilt.flags ? " (moving)" : "");
+    ImGui::TextDisabled("Accelerometer: x %d  y %d  z %d", tilt.gravity[0],
+                        tilt.gravity[1], tilt.gravity[2]);
+    if (ImGui::SliderInt("Tilt to", &elevation_,
+                         NUIController::kElevationMinimum,
+                         NUIController::kElevationMaximum, "%d degrees")) {
+      kernel_state()->nui()->SetElevationAngle(elevation_);
+    }
+  } else {
+    ImGui::Text("Camera elevation reported to the game");
+    if (ImGui::SliderInt("degrees", &elevation_,
+                         NUIController::kElevationMinimum,
+                         NUIController::kElevationMaximum)) {
+      kernel_state()->nui()->SetElevationAngle(elevation_);
+    }
+    ImGui::TextDisabled(
+        "The sensor doesn't tilt: model 1473 Kinects drive their motor "
+        "through Microsoft's audio firmware; set kinect_audio_firmware_path "
+        "to use it. Tilt the sensor by hand to match meanwhile.");
   }
-  ImGui::TextDisabled(
-      "The sensor doesn't tilt: model 1473 Kinects drive their motor through "
-      "firmware Xenia doesn't have. Tilt the sensor by hand to match.");
+
+  ImGui::Separator();
+  NuiAudio* audio = kernel_state()->nui()->audio();
+  if (!audio->microphones_available()) {
+    ImGui::TextDisabled("No Kinect microphones (they need the audio firmware "
+                        "too).");
+  } else if (!audio->microphones_in_use()) {
+    ImGui::TextDisabled("The game isn't using the Kinect microphones yet.");
+  } else {
+    // Shown in dB so speech stands out from a quiet room.
+    const float peak = std::max(audio->microphone_peak(), 1e-5f);
+    const float decibels = 20.0f * std::log10(peak);
+    char label[32];
+    std::snprintf(label, sizeof(label), "%.0f dB", decibels);
+    ImGui::Text("Microphones");
+    ImGui::SameLine();
+    ImGui::ProgressBar(std::clamp((decibels + 60.0f) / 60.0f, 0.0f, 1.0f),
+                       ImVec2(float(kPreviewWidth), 0.0f), label);
+  }
 
   ImGui::Spacing();
   if (ImGui::Button("Close") || !open ||

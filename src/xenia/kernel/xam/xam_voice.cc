@@ -7,6 +7,9 @@
  ******************************************************************************
  */
 
+#include "xenia/kernel/kernel_state.h"
+#include "xenia/kernel/nui.h"
+#include "xenia/kernel/nui_audio.h"
 #include "xenia/kernel/util/shim_utils.h"
 #include "xenia/kernel/xam/xam_private.h"
 #include "xenia/xbox.h"
@@ -44,10 +47,33 @@ dword_result_t XamVoiceSubmitPacket_entry(lpdword_t unk1, dword_t unk2,
 DECLARE_XAM_EXPORT1(XamVoiceSubmitPacket, kNone, kStub);
 
 dword_result_t XamVoiceGetMicArrayStatus_entry() {
-  // Returning 0 here tells caller mic is not connected
-  return 0;
+  // 2 is a connected array, as titles check it; 0 none.
+  return kernel_state()->nui()->audio()->microphones_available() ? 2 : 0;
 }
-DECLARE_XAM_EXPORT1(XamVoiceGetMicArrayStatus, kNone, kStub);
+DECLARE_XAM_EXPORT1(XamVoiceGetMicArrayStatus, kNone, kImplemented);
+
+dword_result_t XamVoiceGetMicArrayAudioEx_entry(dword_t request_ptr,
+                                                dword_t event_ptr) {
+  // Queues a request for the next 16 ms of the Kinect microphones; see
+  // NuiAudio for the request layout.
+  return kernel_state()->nui()->audio()->ReadMicrophones(request_ptr,
+                                                         event_ptr);
+}
+DECLARE_XAM_EXPORT1(XamVoiceGetMicArrayAudioEx, kNone, kSketchy);
+
+dword_result_t XamVoiceGetMicArrayUnderrunStatus_entry(lpdword_t flags_ptr,
+                                                       lpdword_t count_ptr) {
+  // Windows that would have overrun are dropped on the host, and missing ones
+  // are filled with silence, so the title never sees an underrun.
+  if (flags_ptr) {
+    *flags_ptr = 0;
+  }
+  if (count_ptr) {
+    *count_ptr = 0;
+  }
+  return X_ERROR_SUCCESS;
+}
+DECLARE_XAM_EXPORT1(XamVoiceGetMicArrayUnderrunStatus, kNone, kSketchy);
 
 }  // namespace xam
 }  // namespace kernel

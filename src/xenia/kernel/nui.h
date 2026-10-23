@@ -11,13 +11,23 @@
 #define XENIA_KERNEL_NUI_H_
 
 #include <array>
+#include <chrono>
 #include <cstdint>
+#include <memory>
 #include <mutex>
 
 #include "xenia/base/byte_order.h"
 
 namespace xe {
+namespace hid {
+namespace kinect {
+class UsbAudio;
+}  // namespace kinect
+}  // namespace hid
+
 namespace kernel {
+
+class NuiAudio;
 
 // What the title's NUI runtime last reported of the skeletons it tracks, for
 // the host UI. Positions are in skeleton space: metres from the sensor, x to
@@ -59,7 +69,7 @@ class NUIController {
   */
  public:
   NUIController();
-  ~NUIController() = default;
+  ~NUIController();
 
   bool NuiInitialized();
   uint32_t GetNUIDataPtr();
@@ -81,6 +91,24 @@ class NUIController {
   static constexpr int32_t kElevationMaximum = 27;
   int32_t GetElevationAngle() const { return elevation_angle_; }
   void SetElevationAngle(int32_t angle);
+  // Stops the motor where it is.
+  void StopElevationMovement();
+
+  // The sensor's tilt motor, LED and accelerometer, when the host has them.
+  // Lights the LED green while it's attached; the motor sets it back to
+  // blinking when closed.
+  void SetMotor(std::unique_ptr<hid::kinect::UsbAudio> motor);
+  struct TiltState {
+    // Accelerometer counts, about 819 per g: x, y (up when level), z.
+    std::array<int32_t, 3> gravity;
+    // X_TILT_STATUS_FLAGS: whether the motor is moving.
+    uint32_t flags;
+  };
+  // Reads the motor; false without one.
+  bool GetTiltState(TiltState& state);
+
+  // The microphone array of the attached audio device.
+  NuiAudio* audio() const { return audio_.get(); }
 
   // The skeleton frame the title's runtime last sent to xam.
   void SetSkeletonSnapshot(const NuiSkeletonSnapshot& snapshot);
@@ -97,6 +125,13 @@ class NUIController {
   uint32_t tilt_callback_ = 0x0;
   uint32_t init_flags_ = 0x0;
   int32_t elevation_angle_ = 0;
+  std::mutex motor_mutex_;
+  std::unique_ptr<hid::kinect::UsbAudio> motor_;
+  // Reads motor_, so it's declared after it to go first.
+  std::unique_ptr<NuiAudio> audio_;
+  // The motor is read at most every kTiltStatePeriod; titles poll it often.
+  TiltState tilt_state_ = {};
+  std::chrono::steady_clock::time_point tilt_state_time_;
   uint64_t nui_versions_[2] = {};
 };
 
