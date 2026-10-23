@@ -45,6 +45,9 @@ class KinectTunerUI final : public XamGamepadDialog {
   void Refresh();
 
   bool has_opened_ = false;
+  // Closing destroys the preview textures, so it waits for a frame that
+  // hasn't drawn them - the GPU would read them after they're gone otherwise.
+  bool close_requested_ = false;
   bool camera_present_ = false;
   std::chrono::steady_clock::time_point last_refresh_;
   uint32_t depth_sequence_ = 0;

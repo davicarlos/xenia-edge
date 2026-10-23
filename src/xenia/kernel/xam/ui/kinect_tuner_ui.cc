@@ -148,6 +148,11 @@ void KinectTunerUI::Refresh() {
 }
 
 void KinectTunerUI::OnDraw(ImGuiIO& io) {
+  if (close_requested_) {
+    Close();
+    return;
+  }
+
   const auto now = std::chrono::steady_clock::now();
   if (now - last_refresh_ >= kRefreshInterval) {
     last_refresh_ = now;
@@ -217,9 +222,8 @@ void KinectTunerUI::OnDraw(ImGuiIO& io) {
   ImGui::Spacing();
   if (ImGui::Button("Close") || !open ||
       ImGui::IsKeyPressed(ImGuiKey_Escape) || ShouldCloseFromGamepad()) {
-    ImGui::End();
-    Close();
-    return;
+    // This frame has drawn the previews already.
+    close_requested_ = true;
   }
   ImGui::End();
 }
