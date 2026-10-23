@@ -45,6 +45,7 @@
 #include "xenia/base/system.h"
 #include "xenia/base/threading.h"
 #include "xenia/config.h"
+#include "xenia/kernel/xam/ui/kinect_tuner_ui.h"
 #include "xenia/ui/imgui_audio_dialog.h"
 #include "xenia/ui/imgui_confirm_dialog.h"
 #include "xenia/ui/imgui_context_menu.h"
@@ -1686,6 +1687,14 @@ void EmulatorWindow::ToggleContextMenu(bool use_cursor_position) {
                           [this]() { ToggleProfilesConfigDialog(); });
 
   context_menu->AddAction("Audio", [this]() { ToggleAudioDialog(); });
+
+  // The Kinect Tuner a title opens with XamShowNuiTroubleshooterUI, for titles
+  // that don't offer it themselves. It reads the title's NUI state.
+  if (emulator_->is_title_open()) {
+    context_menu->AddAction("Kinect Tuner", [this, input_sys]() {
+      new kernel::xam::ui::KinectTunerUI(imgui_drawer(), input_sys);
+    });
+  }
 
   context_menu->AddSeparator();
 
