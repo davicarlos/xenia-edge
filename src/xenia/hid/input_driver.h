@@ -47,6 +47,13 @@ struct InputDeviceInfo {
   // Subtype the device reports when read natively (XInput), 0 if the device
   // has no native mode.
   uint8_t native_subtype = 0;
+  // True for a device that feeds a guest slot alongside whatever is bound
+  // there, as PC titles take the keyboard and a gamepad both as player 1,
+  // instead of taking a slot of its own. It stays out of the binding table:
+  // shared_slot is the slot it feeds (-1 = none), which the driver keeps
+  // across OnBoundToSlot / OnUnboundFromSlot.
+  bool shares_slot = false;
+  int8_t shared_slot = -1;
 };
 
 class InputDriver {

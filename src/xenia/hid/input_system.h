@@ -99,17 +99,33 @@ class InputSystem {
     uint8_t subtype_override = 0;
   };
 
+  // A device feeding a guest slot alongside the one bound there (see
+  // InputDeviceInfo::shares_slot).
+  struct SharedDevice {
+    InputDriver* driver = nullptr;
+    uint8_t driver_slot = 0;
+    std::string display_name;
+  };
+
   // One enumerated device + its current binding state.
   struct EnumeratedDevice {
     InputDriver* driver;
     InputDeviceInfo info;
-    int bound_slot;  // -1 if not bound
+    int bound_slot;  // -1 if not bound (always -1 for a sharing device)
   };
 
   std::vector<EnumeratedDevice> EnumerateDevices();
+  // A sharing device isn't entered in the table: the driver is told the slot
+  // and reports it from EnumerateDevices from then on.
   void BindSlot(uint32_t guest_slot, InputDriver* driver, uint8_t driver_slot,
                 std::string stable_id, std::string display_name);
   void UnbindSlot(uint32_t guest_slot);
+  // Takes a sharing device out of the slot it feeds.
+  void UnbindSharedDevice(InputDriver* driver, uint8_t driver_slot);
+  const std::vector<SharedDevice>& GetSlotSharedDevices(
+      uint32_t guest_slot) const {
+    return shared_devices_[guest_slot];
+  }
   // Pass subtype = 0 to clear the override and use the device's detected type.
   void SetSlotSubtypeOverride(uint32_t guest_slot, uint8_t subtype);
   const SlotBinding& GetSlotBinding(uint32_t guest_slot) const {
@@ -143,11 +159,13 @@ class InputSystem {
       "New controller connected to slot {}."};
 
   void UpdateUsedSlot(InputDriver* driver, uint8_t slot, bool connected);
+  static void MergeState(X_INPUT_STATE* state, const X_INPUT_STATE& other);
   void AdjustDeadzoneLevels(const uint8_t slot, X_INPUT_GAMEPAD* gamepad);
   X_INPUT_VIBRATION ModifyVibrationLevel(X_INPUT_VIBRATION* vibration);
 
   // Detach gone devices, reattach by stable_id, auto-bind new devices to the
-  // first empty guest slot. Cheap; safe to call from the polling path.
+  // first empty guest slot, and collect the sharing devices of each slot.
+  // Cheap; safe to call from the polling path.
   void ReconcileBindings();
 
   // Seeds slot_bindings_ as detached entries from the passthrough cvar;
@@ -162,6 +180,7 @@ class InputSystem {
 
   std::bitset<XUserMaxUserCount> connected_slots = {};
   std::array<SlotBinding, XUserMaxUserCount> slot_bindings_{};
+  std::array<std::vector<SharedDevice>, XUserMaxUserCount> shared_devices_{};
   // True while a NotifyDevicesChanged() reconcile is pending on the UI
   // thread; coalesces bursts of hotplug events into a single reconcile.
   std::atomic<bool> reconcile_pending_{false};

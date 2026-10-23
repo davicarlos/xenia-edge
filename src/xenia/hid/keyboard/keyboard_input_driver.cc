@@ -29,9 +29,15 @@
 DEFINE_bool(keyboard_passthrough, false,
             "When true, the keyboard surfaces raw keystrokes to the running "
             "title alongside any connected controller. When false (default), "
-            "the keyboard is bindable to a guest slot via the Controllers "
-            "menu and emulates a gamepad.",
+            "the keyboard emulates a gamepad in the slot keyboard_user_index "
+            "names, alongside any controller bound there.",
             "HID");
+DEFINE_int32(keyboard_user_index, 0,
+             "Controller slot (0-3) the keyboard feeds alongside the "
+             "controller bound there, as PC titles take both as player 1. "
+             "-1 keeps the keyboard out of the slots until it's connected "
+             "through the Controllers menu. Updated by that menu.",
+             "HID");
 
 namespace xe {
 namespace hid {
@@ -589,9 +595,23 @@ std::vector<InputDeviceInfo> KeyboardInputDriver::EnumerateDevices() {
   info.driver_slot = 0;
   info.stable_id = "keyboard";
   info.display_name = "Keyboard";
-  // User must explicitly bind the keyboard via the menu.
+  // The keyboard feeds its slot alongside a controller rather than taking
+  // one; the menu moves it by way of OnBoundToSlot / OnUnboundFromSlot.
   info.auto_bind = false;
+  info.shares_slot = true;
+  const int32_t slot = cvars::keyboard_user_index;
+  info.shared_slot =
+      slot >= 0 && slot < XUserMaxUserCount ? static_cast<int8_t>(slot) : -1;
   return {info};
+}
+
+void KeyboardInputDriver::OnBoundToSlot(uint8_t driver_slot,
+                                        uint32_t guest_slot) {
+  OVERRIDE_PERSIST_int32(keyboard_user_index, static_cast<int32_t>(guest_slot));
+}
+
+void KeyboardInputDriver::OnUnboundFromSlot(uint8_t driver_slot) {
+  OVERRIDE_PERSIST_int32(keyboard_user_index, -1);
 }
 
 }  // namespace keyboard

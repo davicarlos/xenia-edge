@@ -39,6 +39,9 @@ class KeyboardInputDriver final : public InputDriver {
   std::vector<InputDeviceInfo> EnumerateDevices() override;
   void DiscardKeystrokes() override;
   void ResetKeystrokes() override;
+  // The slot is kept in keyboard_user_index.
+  void OnBoundToSlot(uint8_t driver_slot, uint32_t guest_slot) override;
+  void OnUnboundFromSlot(uint8_t driver_slot) override;
 
  protected:
   class KeyboardWindowInputListener final : public ui::WindowInputListener,

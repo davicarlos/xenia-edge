@@ -19,6 +19,7 @@
 #include "xenia/ui/quick_settings_dialog_wx.h"
 #include "xenia/ui/windowed_app_wx.h"
 
+#include <array>
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
@@ -2517,9 +2518,13 @@ void EmulatorWindow::RefreshControllerToolbar() {
 
   // Fetch current bindings.
   std::vector<InputSystem::EnumeratedDevice> devices;
+  std::array<std::vector<InputSystem::SharedDevice>, XUserMaxUserCount> shared;
   if (auto* is = emulator_ ? emulator_->input_system() : nullptr) {
     auto lock = is->lock();
     devices = is->EnumerateDevices();
+    for (uint32_t slot = 0; slot < XUserMaxUserCount; ++slot) {
+      shared[slot] = is->GetSlotSharedDevices(slot);
+    }
   }
 
   // Update each fixed controller slot's bitmap — bound slot gets the
@@ -2534,14 +2539,26 @@ void EmulatorWindow::RefreshControllerToolbar() {
       }
     }
     const int id = kToolIdControllerBase + static_cast<int>(slot);
-    if (!bound) {
+    if (!bound && shared[slot].empty()) {
       tb->SetToolBitmap(id, s.controller_empty_bundle);
       tb->SetToolShortHelp(id, wxEmptyString);
       tb->EnableTool(id, false);
       continue;
     }
+    // The bound device and the ones sharing the slot with it, as in the menu.
+    wxString names;
+    if (bound) {
+      names = wxString::FromUTF8(bound->info.display_name);
+    }
+    for (const auto& device : shared[slot]) {
+      if (!names.empty()) {
+        names += wxT(" + ");
+      }
+      names += wxString::FromUTF8(device.display_name);
+    }
     const wxBitmapBundle* bundle = &s.controller_gamepad_bundle;
-    if (bound->info.stable_id == "keyboard") {
+    if (!bound) {
+      // Only the keyboard shares slots.
       bundle = &s.controller_keyboard_bundle;
     } else {
       // User override takes precedence over the device's detected subtype.
@@ -2574,8 +2591,8 @@ void EmulatorWindow::RefreshControllerToolbar() {
       }
     }
     tb->SetToolBitmap(id, *bundle);
-    tb->SetToolShortHelp(id, wxString::Format(_("Slot %d"), slot + 1) + ": " +
-                                 wxString::FromUTF8(bound->info.display_name));
+    tb->SetToolShortHelp(
+        id, wxString::Format(_("Slot %d"), slot + 1) + ": " + names);
     tb->EnableTool(id, true);
   }
   tb->Refresh();
@@ -2617,10 +2634,22 @@ void EmulatorWindow::PopulateControllersMenu(ui::MenuItem* parent) {
 
   for (uint32_t slot = 0; slot < XUserMaxUserCount; ++slot) {
     const auto& binding = input_sys->GetSlotBinding(slot);
+    const auto& shared = input_sys->GetSlotSharedDevices(slot);
     const bool bound = binding.driver != nullptr;
     wxString slot_label = wxString::Format(_("Slot %d"), slot + 1);
+    // The bound device and the ones sharing the slot with it.
+    wxString names;
     if (bound) {
-      slot_label += ": " + wxString::FromUTF8(binding.display_name);
+      names = wxString::FromUTF8(binding.display_name);
+    }
+    for (const auto& device : shared) {
+      if (!names.empty()) {
+        names += wxT(" + ");
+      }
+      names += wxString::FromUTF8(device.display_name);
+    }
+    if (!names.empty()) {
+      slot_label += ": " + names;
     }
     auto slot_entry =
         ui::WxMenuItem::Create(ui::MenuItem::Type::kPopup, slot_label);
@@ -2691,9 +2720,34 @@ void EmulatorWindow::PopulateControllersMenu(ui::MenuItem* parent) {
       slot_entry->AddChild(std::move(type_entry));
     }
 
-    // One entry per enumerated device.
+    // A device sharing the slot leaves it on its own.
+    for (const auto& device : shared) {
+      InputDriver* driver = device.driver;
+      uint8_t driver_slot = device.driver_slot;
+      slot_entry->AddChild(ui::WxMenuItem::Create(
+          ui::MenuItem::Type::kString,
+          wxString::Format(_("Disconnect %s"),
+                           wxString::FromUTF8(device.display_name)),
+          "", [this, driver, driver_slot]() {
+            auto* is = emulator_ ? emulator_->input_system() : nullptr;
+            if (!is) {
+              return;
+            }
+            {
+              auto l = is->lock();
+              is->UnbindSharedDevice(driver, driver_slot);
+            }
+            // The keyboard keeps its slot in the config.
+            config::SaveConfig();
+          }));
+    }
+
+    // One entry per enumerated device; a sharing device is checked at the
+    // slot it feeds.
     for (const auto& dev : devices) {
-      const bool here = dev.bound_slot == static_cast<int>(slot);
+      const bool here = dev.bound_slot == static_cast<int>(slot) ||
+                        (dev.info.shares_slot &&
+                         dev.info.shared_slot == static_cast<int>(slot));
       wxString device_label =
           here ? wxT("✓ ") + wxString::FromUTF8(dev.info.display_name)
                : wxString::FromUTF8(dev.info.display_name);
@@ -2708,8 +2762,12 @@ void EmulatorWindow::PopulateControllersMenu(ui::MenuItem* parent) {
             if (!is) {
               return;
             }
-            auto l = is->lock();
-            is->BindSlot(slot, driver, driver_slot, stable_id, display_name);
+            {
+              auto l = is->lock();
+              is->BindSlot(slot, driver, driver_slot, stable_id, display_name);
+            }
+            // The keyboard keeps its slot in the config.
+            config::SaveConfig();
           }));
     }
 

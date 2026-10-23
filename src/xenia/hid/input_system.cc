@@ -132,15 +132,26 @@ X_RESULT InputSystem::GetCapabilities(uint32_t user_index, uint32_t flags,
     return X_ERROR_DEVICE_NOT_CONNECTED;
   }
   auto& binding = slot_bindings_[user_index];
-  if (!binding.driver || (flags & binding.driver->GetInputType()) == 0) {
-    return X_ERROR_DEVICE_NOT_CONNECTED;
+  if (binding.driver && (flags & binding.driver->GetInputType()) != 0) {
+    X_RESULT result =
+        binding.driver->GetCapabilities(binding.driver_slot, flags, out_caps);
+    if (result == X_ERROR_SUCCESS && binding.subtype_override != 0) {
+      out_caps->sub_type = binding.subtype_override;
+    }
+    return result;
   }
-  X_RESULT result =
-      binding.driver->GetCapabilities(binding.driver_slot, flags, out_caps);
-  if (result == X_ERROR_SUCCESS && binding.subtype_override != 0) {
-    out_caps->sub_type = binding.subtype_override;
+  // With nothing bound, a device sharing the slot stands in for it.
+  for (const auto& shared : shared_devices_[user_index]) {
+    if ((flags & shared.driver->GetInputType()) == 0) {
+      continue;
+    }
+    X_RESULT result =
+        shared.driver->GetCapabilities(shared.driver_slot, flags, out_caps);
+    if (result == X_ERROR_SUCCESS) {
+      return result;
+    }
   }
-  return result;
+  return X_ERROR_DEVICE_NOT_CONNECTED;
 }
 
 X_RESULT InputSystem::GetState(uint32_t user_index, uint32_t flags,
@@ -182,24 +193,70 @@ X_RESULT InputSystem::GetStateForUI(uint32_t user_index, uint32_t flags,
   if (user_index >= XUserMaxUserCount) {
     return X_ERROR_DEVICE_NOT_CONNECTED;
   }
+  // The bound device, then the devices sharing the slot merged on top of it,
+  // so a keyboard and a gamepad act as one controller.
+  InputDriver* connected_driver = nullptr;
   auto& binding = slot_bindings_[user_index];
   if (binding.driver) {
     // Wrong device type for this slot is not a disconnect.
     if ((flags & binding.driver->GetInputType()) == 0) {
       return X_ERROR_DEVICE_NOT_CONNECTED;
     }
-    X_RESULT r = binding.driver->GetState(binding.driver_slot, out_state);
-    if (r == X_ERROR_SUCCESS) {
-      UpdateUsedSlot(binding.driver, user_index, true);
-      AdjustDeadzoneLevels(user_index, &out_state->gamepad);
-      if (out_state->gamepad.buttons != 0) {
-        last_used_slot = user_index;
-      }
-      return r;
+    if (binding.driver->GetState(binding.driver_slot, out_state) ==
+        X_ERROR_SUCCESS) {
+      connected_driver = binding.driver;
     }
+  }
+  for (const auto& shared : shared_devices_[user_index]) {
+    if ((flags & shared.driver->GetInputType()) == 0) {
+      continue;
+    }
+    if (!connected_driver) {
+      if (shared.driver->GetState(shared.driver_slot, out_state) ==
+          X_ERROR_SUCCESS) {
+        connected_driver = shared.driver;
+      }
+      continue;
+    }
+    X_INPUT_STATE shared_state;
+    if (shared.driver->GetState(shared.driver_slot, &shared_state) ==
+        X_ERROR_SUCCESS) {
+      MergeState(out_state, shared_state);
+    }
+  }
+  if (connected_driver) {
+    UpdateUsedSlot(connected_driver, user_index, true);
+    AdjustDeadzoneLevels(user_index, &out_state->gamepad);
+    if (out_state->gamepad.buttons != 0) {
+      last_used_slot = user_index;
+    }
+    return X_ERROR_SUCCESS;
   }
   UpdateUsedSlot(nullptr, user_index, false);
   return X_ERROR_DEVICE_NOT_CONNECTED;
+}
+
+// Adds a second device's state to a slot's: any button pressed on either is
+// pressed, and each axis takes whichever is pushed further. The packet number
+// changes whenever either device's does.
+void InputSystem::MergeState(X_INPUT_STATE* state,
+                             const X_INPUT_STATE& other) {
+  state->packet_number = state->packet_number + other.packet_number;
+  auto& pad = state->gamepad;
+  const auto& other_pad = other.gamepad;
+  pad.buttons = pad.buttons | other_pad.buttons;
+  pad.left_trigger = std::max(pad.left_trigger, other_pad.left_trigger);
+  pad.right_trigger = std::max(pad.right_trigger, other_pad.right_trigger);
+  auto further = [](be<int16_t>& axis, int16_t other_axis) {
+    if (std::abs(static_cast<int32_t>(other_axis)) >
+        std::abs(static_cast<int32_t>(axis))) {
+      axis = other_axis;
+    }
+  };
+  further(pad.thumb_lx, other_pad.thumb_lx);
+  further(pad.thumb_ly, other_pad.thumb_ly);
+  further(pad.thumb_rx, other_pad.thumb_rx);
+  further(pad.thumb_ry, other_pad.thumb_ry);
 }
 
 void InputSystem::AddUIInputBlocker() {
@@ -282,11 +339,20 @@ X_RESULT InputSystem::GetKeystroke(uint32_t user_index, uint32_t flags,
     return r;
   };
 
-  // Bound device for this slot.
+  // Bound device for this slot, then the devices sharing it.
   if (user_index < XUserMaxUserCount) {
     auto& binding = slot_bindings_[user_index];
     if (binding.driver && (flags & binding.driver->GetInputType()) != 0) {
       X_RESULT r = try_driver(binding.driver, binding.driver_slot);
+      if (r == X_ERROR_SUCCESS) {
+        return r;
+      }
+    }
+    for (const auto& shared : shared_devices_[user_index]) {
+      if ((flags & shared.driver->GetInputType()) == 0) {
+        continue;
+      }
+      X_RESULT r = try_driver(shared.driver, shared.driver_slot);
       if (r == X_ERROR_SUCCESS) {
         return r;
       }
@@ -431,6 +497,9 @@ void InputSystem::ReconcileBindings() {
 
   // Pass 2: place devices that aren't currently bound.
   for (auto& l : live) {
+    if (l.info.shares_slot) {
+      continue;
+    }
     bool already_bound = false;
     for (auto& b : slot_bindings_) {
       if (b.driver == l.driver && b.driver_slot == l.info.driver_slot) {
@@ -506,6 +575,19 @@ void InputSystem::ReconcileBindings() {
       b.driver->SetNativeMode(b.driver_slot, !b.subtype_override);
     }
   }
+
+  // Pass 4: the sharing devices feed the slots their drivers report.
+  for (auto& devices : shared_devices_) {
+    devices.clear();
+  }
+  for (auto& l : live) {
+    if (!l.info.shares_slot || l.info.shared_slot < 0 ||
+        l.info.shared_slot >= XUserMaxUserCount) {
+      continue;
+    }
+    shared_devices_[l.info.shared_slot].push_back(
+        {l.driver, l.info.driver_slot, l.info.display_name});
+  }
 }
 
 std::vector<InputSystem::EnumeratedDevice> InputSystem::EnumerateDevices() {
@@ -532,6 +614,26 @@ void InputSystem::BindSlot(uint32_t guest_slot, InputDriver* driver,
                            std::string display_name) {
   if (guest_slot >= XUserMaxUserCount || !driver) {
     return;
+  }
+
+  // A sharing device isn't entered in the table: its driver keeps the slot.
+  for (const auto& info : driver->EnumerateDevices()) {
+    if (info.driver_slot != driver_slot) {
+      continue;
+    }
+    if (info.shares_slot) {
+      driver->OnBoundToSlot(driver_slot, guest_slot);
+      ReconcileBindings();
+      if (kernel::kernel_state()) {
+        kernel::kernel_state()->BroadcastNotification(
+            kXNotificationSystemInputDevicesChanged, 0);
+      }
+      if (bindings_changed_cb_) {
+        bindings_changed_cb_();
+      }
+      return;
+    }
+    break;
   }
 
   // If this device is already bound elsewhere, vacate that slot so it moves.
@@ -620,9 +722,26 @@ void InputSystem::UnbindSlot(uint32_t guest_slot) {
   }
 }
 
+void InputSystem::UnbindSharedDevice(InputDriver* driver,
+                                     uint8_t driver_slot) {
+  if (!driver) {
+    return;
+  }
+  driver->OnUnboundFromSlot(driver_slot);
+  ReconcileBindings();
+  if (kernel::kernel_state()) {
+    kernel::kernel_state()->BroadcastNotification(
+        kXNotificationSystemInputDevicesChanged, 0);
+  }
+  if (bindings_changed_cb_) {
+    bindings_changed_cb_();
+  }
+}
+
 // Format: four ';'-separated slot entries of "stable_id[:subtype]". Subtype is
 // omitted when zero; an empty entry means an unbound slot. Stable IDs are
-// "keyboard" or 32-hex-char SDL GUIDs, so ';' and ':' need no escaping.
+// 32-hex-char SDL GUIDs, so ';' and ':' need no escaping. The keyboard shares
+// a slot through its own persisted cvar and isn't in the table.
 std::string InputSystem::SerializeSlotBindingsForPassthrough() const {
   std::string out;
   bool any = false;
