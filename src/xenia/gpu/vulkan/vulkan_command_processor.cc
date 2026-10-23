@@ -4791,7 +4791,18 @@ bool VulkanCommandProcessor::ResolveCopyDraw(
             rectangle_written_address, rectangle_written_length,
             copy_dest_info_out, rectangle_written_scaled, rectangle);
       },
-      written_address_out, written_length_out, written_scaled_out);
+      written_address_out, written_length_out, written_scaled_out,
+      [this](uint32_t address, uint32_t length) {
+        // The vertex shader runs on the CPU and may read what an earlier
+        // resolve left only in the shared memory buffer, like the Kinect
+        // tracker's one-bit masks, which pick the rectangles to copy.
+        ProvideResolveOutputForGpuWrite(address, length);
+        // Providing the output of a resolve in the open submission submits
+        // it, but IssueCopy has opened that submission already and records the
+        // copies right after - into a closed command buffer, dropped when the
+        // next one begins, unless a new submission is open by then.
+        BeginSubmission(true);
+      });
 }
 
 bool VulkanCommandProcessor::IssueCopy() {

@@ -1153,6 +1153,9 @@ bool ShaderInterpreter::FetchTexture(ucode::TextureFetchInstruction instr,
   if (trace_writer_) {
     trace_writer_->WriteMemoryRead(uint32_t(address), kTexelSize);
   }
+  if (memory_read_callback_) {
+    memory_read_callback_(uint32_t(address), kTexelSize);
+  }
   const uint8_t* texel_memory = memory_.TranslatePhysical(uint32_t(address));
   float data[kSupportedTexelComponentCount];
   for (uint32_t i = 0; i < kSupportedTexelComponentCount; ++i) {
