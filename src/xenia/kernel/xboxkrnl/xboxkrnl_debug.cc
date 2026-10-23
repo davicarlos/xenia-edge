@@ -919,6 +919,28 @@ DECLARE_XBOXKRNL_EXPORT2(KeBugCheckEx, kDebug, kStub, kImportant);
 void KeBugCheck_entry(dword_t code) { KeBugCheckEx_entry(code, 0, 0, 0, 0); }
 DECLARE_XBOXKRNL_EXPORT2(KeBugCheck, kDebug, kImplemented, kImportant);
 
+// Event Tracing for Xbox: titles register telemetry producers and log events
+// through them, which only a development kit collects. Registration succeeds
+// with no handle written, which titles such as 4D53090F take as tracing being
+// off, so they never log.
+dword_result_t EtxProducerRegister_entry(lpvoid_t name, lpvoid_t descriptor,
+                                         dword_t count, dword_t unknown,
+                                         dword_t flags, lpvoid_t handle_ptr) {
+  return X_STATUS_SUCCESS;
+}
+DECLARE_XBOXKRNL_EXPORT1(EtxProducerRegister, kDebug, kStub);
+
+dword_result_t EtxProducerUnregister_entry(lpvoid_t handle) {
+  return X_STATUS_SUCCESS;
+}
+DECLARE_XBOXKRNL_EXPORT1(EtxProducerUnregister, kDebug, kStub);
+
+dword_result_t EtxProducerLog_entry(lpvoid_t handle, lpvoid_t event,
+                                    lpvoid_t data, dword_t size) {
+  return X_STATUS_SUCCESS;
+}
+DECLARE_XBOXKRNL_EXPORT1(EtxProducerLog, kDebug, kStub);
+
 }  // namespace xboxkrnl
 }  // namespace kernel
 }  // namespace xe

@@ -2015,6 +2015,15 @@ dword_result_t NetDll_XHttpCrackUrl_entry(dword_t caller, lpvoid_t url_ptr,
 }
 DECLARE_XAM_EXPORT1(NetDll_XHttpCrackUrl, kNetworking, kImplemented);
 
+// Queue for uploading files to Xbox LIVE storage in the background. There's
+// no service to upload to; titles such as 4D53090F take the failure as the
+// queue being unavailable and clear the handle themselves.
+dword_result_t XamXlfsInitializeUploadQueue_entry(lpvoid_t parameters,
+                                                  lpqword_t queue_handle_ptr) {
+  return X_E_FAIL;
+}
+DECLARE_XAM_EXPORT1(XamXlfsInitializeUploadQueue, kNetworking, kStub);
+
 }  // namespace xam
 }  // namespace kernel
 }  // namespace xe

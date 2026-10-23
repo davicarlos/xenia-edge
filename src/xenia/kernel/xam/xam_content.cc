@@ -629,6 +629,24 @@ dword_result_t XamContentFlush_entry(lpstring_t root_name,
 }
 DECLARE_XAM_EXPORT1(XamContentFlush, kContent, kStub);
 
+// The system's file cache on the hard drive, where titles keep data that may
+// be evicted. Nothing is ever cached, so every open misses and titles fall
+// back to their own copy; 4D53090F treats any non-zero result as a miss.
+dword_result_t XamCacheOpenFile_entry(lpvoid_t cache_file) {
+  return X_ERROR_FILE_NOT_FOUND;
+}
+DECLARE_XAM_EXPORT1(XamCacheOpenFile, kContent, kStub);
+
+dword_result_t XamCacheCloseFile_entry(lpvoid_t cache_file, dword_t flags) {
+  return X_ERROR_SUCCESS;
+}
+DECLARE_XAM_EXPORT1(XamCacheCloseFile, kContent, kStub);
+
+dword_result_t XamCacheReset_entry(dword_t cache_type) {
+  return X_ERROR_SUCCESS;
+}
+DECLARE_XAM_EXPORT1(XamCacheReset, kContent, kStub);
+
 dword_result_t XamContentClose_entry(lpstring_t root_name,
                                      pointer_t<XAM_OVERLAPPED> overlapped_ptr) {
   // Closes a previously opened root from XamContentCreate*.

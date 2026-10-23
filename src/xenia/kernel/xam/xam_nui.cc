@@ -437,6 +437,22 @@ dword_result_t XamUserNuiGetEnrollmentIndex_entry(dword_t user_index,
 }
 DECLARE_XAM_EXPORT1(XamUserNuiGetEnrollmentIndex, kNone, kStub);
 
+// The biometric data Kinect ID keeps for a profile, to recognize its face.
+// None is ever stored; 4D53090F checks for a non-zero result or no data and
+// starts that profile without it.
+dword_result_t XamReadBiometricData_entry(qword_t xuid, lpdword_t data_ptr,
+                                          lpvoid_t buffer, lpdword_t size_ptr,
+                                          lpvoid_t overlapped) {
+  if (data_ptr) {
+    *data_ptr = 0;
+  }
+  if (size_ptr) {
+    *size_ptr = 0;
+  }
+  return X_ERROR_NOT_FOUND;
+}
+DECLARE_XAM_EXPORT1(XamReadBiometricData, kNone, kStub);
+
 // Other
 dword_result_t XamUserNuiEnableBiometric_entry(dword_t user_index,
                                                int_t enable) {
