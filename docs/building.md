@@ -218,3 +218,5 @@ Output lands in `build-arm64/` or `build-x64/` respectively while host native en
 ## Running
 
 To make life easier you can set the program startup arguments in your IDE to something like `--log_file=stdout /path/to/Default.xex` to log to console rather than a file and start up the emulator right away.
+
+To use a Kinect for Xbox 360 with Kinect titles, see [kinect.md](kinect.md).
