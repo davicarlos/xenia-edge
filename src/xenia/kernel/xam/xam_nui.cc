@@ -189,6 +189,184 @@ qword_result_t XamNuiSkeletonGetBestSkeletonIndex_entry(
 }
 DECLARE_XAM_EXPORT1(XamNuiSkeletonGetBestSkeletonIndex, kNone, kImplemented);
 
+// XamNuiSkeletonScoreUpdate keeps a record of how well each of up to two
+// tracked players stands for the sensor (0x8198B628 and 0x8198B390): the
+// warnings behind "move to the center", "step back" and "face the sensor".
+constexpr uint32_t kSkeletonFrameNormalToGravity = 0x20;
+constexpr uint32_t kSkeletonJointPositions = 0x20;
+constexpr uint32_t kSkeletonJointStates = 0x160;
+constexpr uint32_t kJointShoulderCenter = 2;
+constexpr uint32_t kJointHead = 3;
+constexpr uint32_t kJointShoulderLeft = 4;
+constexpr uint32_t kJointHandLeft = 7;
+constexpr uint32_t kJointShoulderRight = 8;
+constexpr uint32_t kJointHandRight = 11;
+constexpr uint32_t kScoreRecords = 2;
+// Focal length of the 320x240 depth image, in pixels; its center is 160, 120.
+constexpr float kDepthFocalLength = 285.63f;
+
+struct X_NUI_SKELETON_SCORE {
+  xe::be<uint32_t> tracking_state;
+  // tracking_state, or 1 when any warning below is set.
+  xe::be<uint32_t> state;
+  // Shoulders out of tracking, and both of them and the head.
+  xe::be<float> shoulders_lost;
+  xe::be<uint32_t> upper_body_lost;
+  // From -1 at the image's left to 1 at its right, and near either edge.
+  xe::be<float> horizontal_position;
+  xe::be<uint32_t> near_side_edge;
+  // Meters from the sensor, and closer than 1 m.
+  xe::be<float> distance;
+  xe::be<uint32_t> too_close;
+  // Degrees the shoulders turn away from facing the sensor.
+  xe::be<float> turn_degrees;
+  xe::be<uint32_t> turned;
+  // 1.0 once a hand has been tracked, and none tracked yet.
+  xe::be<float> hand_tracked;
+  xe::be<uint32_t> no_hands;
+  xe::be<uint32_t> tracking_id;
+  xe::be<uint32_t> skeleton_index;
+  xe::be<uint32_t> new_player;
+};
+static_assert_size(X_NUI_SKELETON_SCORE, 0x3C);
+
+struct X_NUI_SKELETON_SCORES {
+  X_NUI_SKELETON_SCORE players[kScoreRecords];
+  xe::be<uint32_t> tracked_count;
+};
+
+static void ScoreSkeleton(const uint8_t* skeleton, const float* up,
+                          X_NUI_SKELETON_SCORE& score) {
+  auto joint_state = [skeleton](uint32_t joint) {
+    return xe::load_and_swap<uint32_t>(skeleton + kSkeletonJointStates +
+                                       joint * 4);
+  };
+  auto joint = [skeleton](uint32_t joint, uint32_t axis) {
+    return xe::load_and_swap<float>(skeleton + kSkeletonJointPositions +
+                                    joint * 16 + axis * 4);
+  };
+  const auto* header =
+      reinterpret_cast<const X_NUI_SKELETON_DATA_HEADER*>(skeleton);
+  score.tracking_state = header->tracking_state;
+  score.state = header->tracking_state;
+  score.tracking_id = 0;
+  score.skeleton_index = 0;
+  score.new_player = 0;
+  if (header->tracking_state != kSkeletonTracked) {
+    return;
+  }
+  uint32_t shoulders_lost = 0;
+  for (uint32_t shoulder : {kJointShoulderLeft, kJointShoulderRight}) {
+    if (joint_state(shoulder) != kSkeletonTracked) {
+      ++shoulders_lost;
+    }
+  }
+  score.shoulders_lost = float(shoulders_lost);
+  score.upper_body_lost =
+      shoulders_lost >= 2 && joint_state(kJointHead) != kSkeletonTracked;
+  // The player's position projected into the depth image.
+  const float x = header->position[0], z = header->position[2];
+  const int32_t column = z != 0.0f ? int32_t(x * kDepthFocalLength / z + 160.0f)
+                                   : 0;
+  const float horizontal = float(160 - column) / 160.0f;
+  score.horizontal_position = horizontal;
+  score.near_side_edge = std::abs(horizontal) >= 0.7f;
+  score.distance = z;
+  score.too_close = z <= 1.0f;
+  // From the shoulder center to the nearer shoulder, across the floor.
+  const uint32_t shoulder =
+      joint(kJointShoulderLeft, 2) <= joint(kJointShoulderRight, 2)
+          ? kJointShoulderLeft
+          : kJointShoulderRight;
+  float d[3];
+  for (uint32_t i = 0; i < 3; ++i) {
+    d[i] = joint(shoulder, i) - joint(kJointShoulderCenter, i);
+  }
+  const float along_up = d[0] * up[0] + d[1] * up[1] + d[2] * up[2];
+  for (uint32_t i = 0; i < 3; ++i) {
+    d[i] -= along_up * up[i];
+  }
+  const float length = std::sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
+  const float cosine =
+      std::clamp(length != 0.0f ? d[0] / length : d[0], -1.0f, 1.0f);
+  score.turn_degrees = std::acos(cosine) * 57.2957764f;
+  score.turned = 0;
+  if (joint_state(kJointHandLeft) == kSkeletonTracked ||
+      joint_state(kJointHandRight) == kSkeletonTracked) {
+    score.hand_tracked = 1.0f;
+  }
+  score.no_hands = score.hand_tracked == 0.0f;
+  if (score.upper_body_lost || score.near_side_edge || score.too_close ||
+      score.turned || score.no_hands) {
+    score.state = 1;
+  }
+}
+
+dword_result_t XamNuiSkeletonScoreUpdate_entry(lpvoid_t skeleton_frame,
+                                               lpvoid_t scores_ptr) {
+  if (!skeleton_frame || !scores_ptr) {
+    return X_E_INVALIDARG;
+  }
+  uint8_t* frame = skeleton_frame.as<uint8_t*>();
+  auto& scores = *scores_ptr.as<X_NUI_SKELETON_SCORES*>();
+  float up[3];
+  for (uint32_t i = 0; i < 3; ++i) {
+    up[i] = xe::load_and_swap<float>(frame + kSkeletonFrameNormalToGravity +
+                                     i * 4);
+  }
+  // Tracked skeletons keep the record that has their tracking ID; the others
+  // take the free records in order.
+  uint32_t record_skeleton[kScoreRecords] = {UINT32_MAX, UINT32_MAX};
+  uint32_t unmatched[kSkeletonCount];
+  uint32_t unmatched_count = 0, tracked = 0;
+  for (uint32_t i = 0; i < kSkeletonCount; ++i) {
+    const auto* skeleton = GetSkeleton(frame, i);
+    if (skeleton->tracking_state != kSkeletonTracked) {
+      continue;
+    }
+    ++tracked;
+    uint32_t record = 0;
+    while (record < kScoreRecords &&
+           scores.players[record].tracking_id != skeleton->tracking_id) {
+      ++record;
+    }
+    if (record < kScoreRecords) {
+      record_skeleton[record] = i;
+    } else {
+      unmatched[unmatched_count++] = i;
+    }
+  }
+  // A lone player that kept the second record moves to the first.
+  if (tracked == 1 && record_skeleton[1] != UINT32_MAX) {
+    scores.players[0] = scores.players[1];
+    std::memset(&scores.players[1], 0, sizeof(scores.players[1]));
+    record_skeleton[0] = record_skeleton[1];
+    record_skeleton[1] = UINT32_MAX;
+  }
+  uint32_t next_unmatched = 0;
+  for (uint32_t record = 0; record < kScoreRecords; ++record) {
+    bool new_player = false;
+    if (record_skeleton[record] == UINT32_MAX) {
+      if (next_unmatched == unmatched_count) {
+        continue;
+      }
+      record_skeleton[record] = unmatched[next_unmatched++];
+      std::memset(&scores.players[record], 0, sizeof(scores.players[record]));
+      new_player = true;
+    }
+    const uint32_t index = record_skeleton[record];
+    const auto* skeleton = GetSkeleton(frame, index);
+    ScoreSkeleton(reinterpret_cast<const uint8_t*>(skeleton), up,
+                  scores.players[record]);
+    scores.players[record].tracking_id = skeleton->tracking_id;
+    scores.players[record].skeleton_index = index;
+    scores.players[record].new_player = new_player;
+  }
+  scores.tracked_count = tracked;
+  return X_E_SUCCESS;
+}
+DECLARE_XAM_EXPORT1(XamNuiSkeletonScoreUpdate, kNone, kImplemented);
+
 /* XamNuiCamera Notes
    - most require message calls to xam in 0x0002Bxxx area
 */
