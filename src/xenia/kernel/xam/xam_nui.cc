@@ -8,12 +8,18 @@
  */
 
 #include <algorithm>
+#include <chrono>
 #include <cfloat>
 #include <cmath>
+#include <cstdio>
 #include <cstring>
+#include <filesystem>
+#include <mutex>
 #include <string>
 #include <utility>
 
+#include "xenia/base/cvar.h"
+#include "xenia/base/filesystem.h"
 #include "xenia/base/logging.h"
 #include "xenia/emulator.h"
 #include "xenia/kernel/kernel_state.h"
@@ -24,7 +30,13 @@
 #include "xenia/kernel/xam/user_settings.h"
 #include "xenia/kernel/xam/user_tracker.h"
 #include "xenia/kernel/xam/xam_private.h"
+#include "xenia/kernel/xam/xam_ui.h"
 #include "xenia/xbox.h"
+
+DEFINE_bool(kinect_guide_gesture, true,
+            "Open the Kinect Guide when a player holds the guide gesture in "
+            "titles that leave it to the system.",
+            "HID");
 
 namespace xe {
 namespace kernel {
@@ -128,13 +140,51 @@ struct X_NUI_DEPTH_CALIBRATION {
 };
 static_assert_size(X_NUI_DEPTH_CALIBRATION, 0x30);
 
+// The console keeps the depth calibration titles store in a system setting
+// (0x816F9990 and 0x816F9A50); here it's a file in the storage root. Both
+// answer with HRESULT_FROM_NT, so success is 0x10000000.
+static std::filesystem::path GetDepthCalibrationPath() {
+  return kernel_state()->emulator()->storage_root() /
+         "kinect_depth_calibration.bin";
+}
+
 dword_result_t XamNuiGetDepthCalibration_entry(
     pointer_t<X_NUI_DEPTH_CALIBRATION> depth_data) {
   // always cleared before new data written
   std::memset(depth_data, 0, sizeof(X_NUI_DEPTH_CALIBRATION));
-  return X_STATUS_NO_SUCH_FILE | X_FACILITY_NT_BIT;
+  FILE* file = xe::filesystem::OpenFile(GetDepthCalibrationPath(), "rb");
+  if (!file) {
+    return X_STATUS_NO_SUCH_FILE | X_FACILITY_NT_BIT;
+  }
+  X_NUI_DEPTH_CALIBRATION calibration;
+  const bool read = std::fread(&calibration, 1, sizeof(calibration), file) ==
+                    sizeof(calibration);
+  std::fclose(file);
+  if (!read) {
+    return X_STATUS_NO_SUCH_FILE | X_FACILITY_NT_BIT;
+  }
+  std::memcpy(depth_data, &calibration, sizeof(calibration));
+  return X_STATUS_SUCCESS | X_FACILITY_NT_BIT;
 }
-DECLARE_XAM_EXPORT1(XamNuiGetDepthCalibration, kNone, kStub);
+DECLARE_XAM_EXPORT1(XamNuiGetDepthCalibration, kNone, kImplemented);
+
+dword_result_t XamNuiStoreDepthCalibration_entry(
+    pointer_t<X_NUI_DEPTH_CALIBRATION> depth_data) {
+  if (!depth_data) {
+    return X_E_INVALIDARG;
+  }
+  FILE* file = xe::filesystem::OpenFile(GetDepthCalibrationPath(), "wb");
+  if (!file) {
+    return X_STATUS_UNSUCCESSFUL | X_FACILITY_NT_BIT;
+  }
+  const bool written =
+      std::fwrite(depth_data, 1, sizeof(X_NUI_DEPTH_CALIBRATION), file) ==
+      sizeof(X_NUI_DEPTH_CALIBRATION);
+  std::fclose(file);
+  return (written ? X_STATUS_SUCCESS : X_STATUS_UNSUCCESSFUL) |
+         X_FACILITY_NT_BIT;
+}
+DECLARE_XAM_EXPORT1(XamNuiStoreDepthCalibration, kNone, kImplemented);
 
 // Skeleton
 // NUI_SKELETON_FRAME as xam reads it (big-endian): six NUI_SKELETON_DATA from
@@ -302,13 +352,8 @@ static void ScoreSkeleton(const uint8_t* skeleton, const float* up,
   }
 }
 
-dword_result_t XamNuiSkeletonScoreUpdate_entry(lpvoid_t skeleton_frame,
-                                               lpvoid_t scores_ptr) {
-  if (!skeleton_frame || !scores_ptr) {
-    return X_E_INVALIDARG;
-  }
-  uint8_t* frame = skeleton_frame.as<uint8_t*>();
-  auto& scores = *scores_ptr.as<X_NUI_SKELETON_SCORES*>();
+static void UpdateSkeletonScores(const uint8_t* frame,
+                                 X_NUI_SKELETON_SCORES& scores) {
   float up[3];
   for (uint32_t i = 0; i < 3; ++i) {
     up[i] = xe::load_and_swap<float>(frame + kSkeletonFrameNormalToGravity +
@@ -320,7 +365,7 @@ dword_result_t XamNuiSkeletonScoreUpdate_entry(lpvoid_t skeleton_frame,
   uint32_t unmatched[kSkeletonCount];
   uint32_t unmatched_count = 0, tracked = 0;
   for (uint32_t i = 0; i < kSkeletonCount; ++i) {
-    const auto* skeleton = GetSkeleton(frame, i);
+    const auto* skeleton = GetSkeleton(const_cast<uint8_t*>(frame), i);
     if (skeleton->tracking_state != kSkeletonTracked) {
       continue;
     }
@@ -355,7 +400,7 @@ dword_result_t XamNuiSkeletonScoreUpdate_entry(lpvoid_t skeleton_frame,
       new_player = true;
     }
     const uint32_t index = record_skeleton[record];
-    const auto* skeleton = GetSkeleton(frame, index);
+    const auto* skeleton = GetSkeleton(const_cast<uint8_t*>(frame), index);
     ScoreSkeleton(reinterpret_cast<const uint8_t*>(skeleton), up,
                   scores.players[record]);
     scores.players[record].tracking_id = skeleton->tracking_id;
@@ -363,6 +408,15 @@ dword_result_t XamNuiSkeletonScoreUpdate_entry(lpvoid_t skeleton_frame,
     scores.players[record].new_player = new_player;
   }
   scores.tracked_count = tracked;
+}
+
+dword_result_t XamNuiSkeletonScoreUpdate_entry(lpvoid_t skeleton_frame,
+                                               lpvoid_t scores_ptr) {
+  if (!skeleton_frame || !scores_ptr) {
+    return X_E_INVALIDARG;
+  }
+  UpdateSkeletonScores(skeleton_frame.as<uint8_t*>(),
+                       *scores_ptr.as<X_NUI_SKELETON_SCORES*>());
   return X_E_SUCCESS;
 }
 DECLARE_XAM_EXPORT1(XamNuiSkeletonScoreUpdate, kNone, kImplemented);
@@ -831,19 +885,18 @@ static_assert_size(X_NUI_PLAYER_ENGAGEMENT_UPDATE, 0x1C);
 // skeletons the tracker follows (+0xACC in the frame): the engaged player,
 // then the others by distance across the floor, tracked ones counting 0.3 m
 // closer. As xam does it.
-void XamNuiPlayerEngagementUpdate_entry(
-    lpvoid_t skeleton_frame, dword_t engaged_tracking_id,
-    pointer_t<X_NUI_PLAYER_ENGAGEMENT_UPDATE> engagement) {
+static void UpdatePlayerEngagement(uint8_t* frame,
+                                   uint32_t engaged_tracking_id,
+                                   X_NUI_PLAYER_ENGAGEMENT_UPDATE* engagement) {
   std::memset(engagement, 0, sizeof(X_NUI_PLAYER_ENGAGEMENT_UPDATE));
   engagement->engaged_index = 0xFFFFFFFF;
   engagement->engaged_user_index = 0xFE;
   engagement->engaged_enrollment_index = 0xFFFFFFFE;
-  if (!skeleton_frame) {
+  if (!frame) {
     return;
   }
   constexpr float kTrackedBonus = 0.3f;
   constexpr float kMinimumDistance = 0.1f;
-  uint8_t* frame = skeleton_frame.as<uint8_t*>();
   float chosen_distance[2] = {FLT_MAX, FLT_MAX};
   uint32_t chosen_id[2] = {0, 0};
   for (uint32_t i = 0; i < kSkeletonCount; ++i) {
@@ -883,7 +936,432 @@ void XamNuiPlayerEngagementUpdate_entry(
   xe::store_and_swap<uint32_t>(frame + kSkeletonFrameChosenIds + 4,
                                chosen_id[1]);
 }
+
+void XamNuiPlayerEngagementUpdate_entry(
+    lpvoid_t skeleton_frame, dword_t engaged_tracking_id,
+    pointer_t<X_NUI_PLAYER_ENGAGEMENT_UPDATE> engagement) {
+  UpdatePlayerEngagement(
+      skeleton_frame ? skeleton_frame.as<uint8_t*>() : nullptr,
+      engaged_tracking_id, engagement);
+}
 DECLARE_XAM_EXPORT1(XamNuiPlayerEngagementUpdate, kNone, kImplemented);
+
+// The NUI HUD: what xam does with each skeleton frame a title hands it
+// through XamNuiHudInterpretFrame (0x816ACC68 and 0x816AC688). It picks the
+// two skeletons to track, marks players the sensor sees badly as position
+// only, engages a player who waves, and opens the Kinect Guide on the guide
+// gesture.
+namespace {
+
+constexpr uint32_t kJointElbowLeft = 5;
+constexpr uint32_t kJointElbowRight = 9;
+constexpr uint32_t kJointWristLeft = 6;
+
+// The engagement wave (0x8180AAB8, parameters from 0x8180A388): four half
+// waves of a raised hand, each at least three frames the same way and fast
+// enough, at most a second apart and keeping a steady rhythm.
+struct WaveHand {
+  enum Direction : uint32_t { kNone = 1, kLeft = 2, kRight = 3 };
+  static constexpr uint32_t kHalfWaves = 4;
+  static constexpr uint32_t kDirectionFrames = 3;
+  static constexpr float kStartMs = 1000.0f;
+  static constexpr float kHalfWaveMs = 1000.0f;
+  static constexpr float kSlowSpeed = 0.7f;
+  static constexpr float kFastSpeed = 1.5f;
+  static constexpr float kRhythmTolerance = 0.6f;
+
+  uint32_t tracking_id = 0;
+  bool started = false;
+  float previous[2] = {};
+  uint32_t direction = kNone;
+  uint32_t direction_frames = 0;
+  uint32_t candidate = kNone;
+  float speed = 0.0f;
+  float tracked_ms = 0.0f;
+  uint32_t half_waves = 0;
+  uint32_t last_direction = kNone;
+  float elapsed_ms = 0.0f;
+  float last_half_wave_ms = 0.0f;
+  float period_ms = 0.0f;
+
+  void ResetWaves() {
+    speed = 0.0f;
+    half_waves = 0;
+    elapsed_ms = 0.0f;
+    last_direction = kNone;
+    last_half_wave_ms = 0.0f;
+    period_ms = 0.0f;
+  }
+  void Reset(uint32_t id) {
+    *this = WaveHand();
+    tracking_id = id;
+  }
+
+  // The hand's sideways speed, in m/s, smoothed over up to three frames that
+  // go the same way (0x8180A988).
+  void UpdateDirection(float dt_ms, const float* hand, bool hand_tracked) {
+    float measured = speed;
+    if (hand_tracked) {
+      const float dx = hand[0] - previous[0], dy = hand[1] - previous[1];
+      measured = std::abs(dy) <= std::abs(dx) && dt_ms > 0.0f
+                     ? dx / (dt_ms * 0.001f)
+                     : 0.0f;
+    }
+    if (measured != 0.0f) {
+      const uint32_t moving = measured > 0.0f ? kRight : kLeft;
+      if (direction == moving) {
+        ++direction_frames;
+      } else {
+        direction = moving;
+        direction_frames = 1;
+      }
+    }
+    if (direction_frames) {
+      if (direction_frames == kDirectionFrames) {
+        candidate = direction;
+      }
+      const float frames = float(std::min(direction_frames, 3u));
+      speed += (measured - speed) / frames;
+    }
+  }
+
+  // A swing the other way, fast enough for the frames it took (0x8180A5C0).
+  bool HalfWave() const {
+    const float slow = kSlowSpeed, fast = kFastSpeed;
+    const uint32_t n = direction_frames;
+    switch (last_direction) {
+      case kLeft:
+        return (candidate == kRight && n > kDirectionFrames && speed > slow) ||
+               (n >= kDirectionFrames && speed > fast);
+      case kRight:
+        return (candidate == kLeft && n > kDirectionFrames && speed < -slow) ||
+               (n >= kDirectionFrames && speed < -fast);
+      default:
+        return (n > kDirectionFrames && std::abs(speed) > slow) ||
+               (n >= kDirectionFrames && std::abs(speed) > fast);
+    }
+  }
+
+  // Returns true when the wave completes.
+  bool Update(float dt_ms, const float* hand, bool hand_tracked, bool raised) {
+    bool engaged = false;
+    if (!started) {
+      if (!hand_tracked) {
+        return false;
+      }
+      started = true;
+    } else {
+      UpdateDirection(dt_ms, hand, hand_tracked);
+      // 0x8180A518: a second of tracking first, then at most a second
+      // between half waves.
+      tracked_ms += dt_ms;
+      bool counting = tracked_ms > kStartMs;
+      if (!counting) {
+        ResetWaves();
+      } else if (half_waves) {
+        elapsed_ms += dt_ms;
+        if (elapsed_ms - last_half_wave_ms > kHalfWaveMs) {
+          ResetWaves();
+        }
+      }
+      if (counting && HalfWave()) {
+        last_direction = candidate;
+        ++half_waves;
+        // 0x8180A6F8: the rhythm.
+        const float interval = elapsed_ms - last_half_wave_ms;
+        if (half_waves > 1) {
+          if (half_waves < 3 ||
+              std::abs(period_ms / interval - 1.0f) <= kRhythmTolerance) {
+            period_ms += (interval - period_ms) / float(half_waves - 1);
+          } else {
+            half_waves = 2;
+            period_ms = interval;
+          }
+        }
+        last_half_wave_ms = elapsed_ms;
+        if (!raised) {
+          ResetWaves();
+        }
+        if (half_waves >= kHalfWaves) {
+          ResetWaves();
+          tracked_ms = 0.0f;
+          engaged = true;
+        }
+      }
+    }
+    if (hand_tracked) {
+      previous[0] = hand[0];
+      previous[1] = hand[1];
+    }
+    return engaged;
+  }
+};
+
+// The guide gesture (0x8180A0B0): a pose held for three seconds, after which
+// the others wait 1.5 s. xam measures the arm against the trunk with angle
+// windows it doesn't name; this takes the gesture as the Xbox 360 explains it,
+// the left arm held straight out from the body, about 45 degrees down.
+struct GuidePose {
+  static constexpr float kHoldMs = 3000.0f;
+  static constexpr float kCooldownMs = 1500.0f;
+  uint32_t tracking_id = 0;
+  float held_ms = 0.0f;
+  float cooldown_ms = 0.0f;
+  bool held_last_frame = false;
+};
+
+struct NuiHudState {
+  std::mutex mutex;
+  std::chrono::steady_clock::time_point last_frame;
+  bool have_last_frame = false;
+  X_NUI_SKELETON_SCORES scores = {};
+  WaveHand waves[kScoreRecords][2];
+  GuidePose guide[kSkeletonCount];
+  // The skeletons of the last frame: tracking ID and enrollment index.
+  uint32_t tracking_ids[kSkeletonCount] = {};
+  uint32_t enrollment_indices[kSkeletonCount] = {};
+  bool interpreted = false;
+  uint32_t input_filter = 0;
+};
+
+NuiHudState& GetHudState() {
+  static NuiHudState state;
+  return state;
+}
+
+struct SkeletonJoints {
+  const uint8_t* skeleton;
+  uint32_t state(uint32_t joint) const {
+    return xe::load_and_swap<uint32_t>(skeleton + kSkeletonJointStates +
+                                       joint * 4);
+  }
+  void position(uint32_t joint, float* out) const {
+    for (uint32_t i = 0; i < 3; ++i) {
+      out[i] = xe::load_and_swap<float>(skeleton + kSkeletonJointPositions +
+                                        joint * 16 + i * 4);
+    }
+  }
+};
+
+float Dot(const float* a, const float* b) {
+  return a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+}
+float Length(const float* a) { return std::sqrt(Dot(a, a)); }
+
+// 0x8180A788: the hand above the elbow and not reaching far towards the
+// sensor, with the player facing it.
+bool HandRaised(const SkeletonJoints& joints, uint32_t hand, uint32_t elbow,
+                uint32_t shoulder, const float* up,
+                const X_NUI_SKELETON_SCORE& score) {
+  float h[3], e[3], s[3];
+  joints.position(hand, h);
+  joints.position(elbow, e);
+  joints.position(shoulder, s);
+  const float above[3] = {h[0] - e[0], h[1] - e[1], h[2] - e[2]};
+  if (Dot(above, up) < 0.0f || h[2] > s[2] + 0.06f) {
+    return false;
+  }
+  // xam takes the turn as under 45 degrees; the score's angle is to either
+  // shoulder, so both ends of it face the sensor.
+  const float turn = score.turn_degrees;
+  return std::min(turn, 180.0f - turn) < 45.0f;
+}
+
+bool GuidePoseHeld(const SkeletonJoints& joints, const float* up) {
+  for (uint32_t joint : {kJointShoulderLeft, kJointElbowLeft, kJointHandLeft,
+                         kJointShoulderRight}) {
+    if (joints.state(joint) != kSkeletonTracked) {
+      return false;
+    }
+  }
+  float sl[3], el[3], hl[3], sr[3];
+  joints.position(kJointShoulderLeft, sl);
+  joints.position(kJointElbowLeft, el);
+  joints.position(kJointHandLeft, hl);
+  joints.position(kJointShoulderRight, sr);
+  // Towards the player's left, across the shoulders and level with the floor.
+  float out[3] = {sl[0] - sr[0], sl[1] - sr[1], sl[2] - sr[2]};
+  const float out_up = Dot(out, up);
+  for (uint32_t i = 0; i < 3; ++i) {
+    out[i] -= out_up * up[i];
+  }
+  const float out_length = Length(out);
+  const float arm[3] = {hl[0] - sl[0], hl[1] - sl[1], hl[2] - sl[2]};
+  const float upper[3] = {el[0] - sl[0], el[1] - sl[1], el[2] - sl[2]};
+  const float lower[3] = {hl[0] - el[0], hl[1] - el[1], hl[2] - el[2]};
+  const float arm_length = Length(arm);
+  if (out_length == 0.0f || arm_length == 0.0f ||
+      arm_length < 0.85f * (Length(upper) + Length(lower))) {
+    return false;
+  }
+  // Between 30 and 60 degrees below the shoulder, out to the side rather than
+  // forwards.
+  const float down = -Dot(arm, up) / arm_length;
+  const float side = Dot(arm, out) / (out_length * arm_length);
+  return down >= 0.5f && down <= 0.866f && side >= 0.4f;
+}
+
+void InterpretFrame(NuiHudState& hud, uint8_t* frame, float dt_ms) {
+  auto nui = kernel_state()->nui();
+  float up[3];
+  for (uint32_t i = 0; i < 3; ++i) {
+    up[i] = xe::load_and_swap<float>(frame + kSkeletonFrameNormalToGravity +
+                                     i * 4);
+  }
+  uint32_t engaged = nui->GetEngagedTrackingId();
+  X_NUI_PLAYER_ENGAGEMENT_UPDATE engagement;
+  UpdatePlayerEngagement(frame, engaged, &engagement);
+  UpdateSkeletonScores(frame, hud.scores);
+  // Players with a warning reach the title as position only.
+  for (const auto& score : hud.scores.players) {
+    const uint32_t index = score.skeleton_index;
+    if (!score.tracking_id || index >= kSkeletonCount) {
+      continue;
+    }
+    auto* skeleton = GetSkeleton(frame, index);
+    if (skeleton->tracking_id == score.tracking_id &&
+        skeleton->tracking_state == kSkeletonTracked) {
+      skeleton->tracking_state = score.state;
+    }
+  }
+  if (engaged && engagement.engaged_index == 0xFFFFFFFF) {
+    XELOGI("Kinect: engaged player {:08X} left", engaged);
+    nui->SetEngagedTrackingId(0);
+    engaged = 0;
+  }
+  for (uint32_t record = 0; record < kScoreRecords; ++record) {
+    const auto& score = hud.scores.players[record];
+    const uint32_t id = score.tracking_id;
+    const uint32_t index = score.skeleton_index;
+    const auto* skeleton =
+        index < kSkeletonCount ? GetSkeleton(frame, index) : nullptr;
+    for (uint32_t side = 0; side < 2; ++side) {
+      WaveHand& wave = hud.waves[record][side];
+      if (!id || !skeleton || skeleton->tracking_id != id ||
+          score.tracking_state != kSkeletonTracked) {
+        wave.Reset(0);
+        continue;
+      }
+      if (wave.tracking_id != id) {
+        wave.Reset(id);
+      }
+      if (id == engaged) {
+        continue;
+      }
+      const SkeletonJoints joints{reinterpret_cast<const uint8_t*>(skeleton)};
+      const uint32_t hand = side ? kJointHandRight : kJointHandLeft;
+      float position[3];
+      joints.position(hand, position);
+      const bool raised =
+          HandRaised(joints, hand, side ? kJointElbowRight : kJointElbowLeft,
+                     side ? kJointShoulderRight : kJointShoulderLeft, up,
+                     score);
+      if (wave.Update(dt_ms, position, joints.state(hand) != 0, raised)) {
+        XELOGI("Kinect: player {:08X} engaged by waving", id);
+        nui->SetEngagedTrackingId(id);
+        engaged = id;
+      }
+    }
+  }
+  for (uint32_t i = 0; i < kSkeletonCount; ++i) {
+    const auto* skeleton = GetSkeleton(frame, i);
+    hud.tracking_ids[i] = skeleton->tracking_state ? uint32_t(skeleton->tracking_id) : 0;
+    hud.enrollment_indices[i] = skeleton->enrollment_index;
+  }
+  hud.interpreted = true;
+  // The guide gesture.
+  bool open_guide = false;
+  uint32_t guide_player = 0;
+  for (uint32_t i = 0; i < kSkeletonCount; ++i) {
+    GuidePose& pose = hud.guide[i];
+    const auto* skeleton = GetSkeleton(frame, i);
+    pose.cooldown_ms = std::max(pose.cooldown_ms - dt_ms, 0.0f);
+    const bool held =
+        cvars::kinect_guide_gesture &&
+        skeleton->tracking_state == kSkeletonTracked &&
+        GuidePoseHeld(
+            SkeletonJoints{reinterpret_cast<const uint8_t*>(skeleton)}, up);
+    if (pose.tracking_id != skeleton->tracking_id) {
+      pose = GuidePose();
+      pose.tracking_id = skeleton->tracking_id;
+    }
+    if (held && pose.cooldown_ms == 0.0f) {
+      pose.held_ms += dt_ms;
+    } else if (!pose.held_last_frame) {
+      // A frame's slip doesn't lose the pose.
+      pose.held_ms = 0.0f;
+    }
+    pose.held_last_frame = held;
+    if (pose.held_ms >= GuidePose::kHoldMs) {
+      open_guide = true;
+      guide_player = pose.tracking_id;
+    }
+  }
+  if (open_guide) {
+    for (auto& pose : hud.guide) {
+      pose.held_ms = 0.0f;
+      pose.cooldown_ms = GuidePose::kCooldownMs;
+    }
+    XELOGI("Kinect: guide gesture by player {:08X}", guide_player);
+    xeXamShowGuide();
+  }
+}
+
+}  // namespace
+
+dword_result_t XamNuiHudInterpretFrame_entry(lpvoid_t skeleton_frame) {
+  X_RESULT result = X_E_FAIL;
+  if (skeleton_frame && XamNuiHudIsEnabled_entry()) {
+    NuiHudState& hud = GetHudState();
+    std::lock_guard<std::mutex> lock(hud.mutex);
+    const auto now = std::chrono::steady_clock::now();
+    float dt_ms = 0.0f;
+    if (hud.have_last_frame) {
+      dt_ms = std::chrono::duration<float, std::milli>(now - hud.last_frame)
+                  .count();
+      // After a pause, as one frame.
+      dt_ms = std::min(dt_ms, 100.0f);
+    }
+    hud.last_frame = now;
+    hud.have_last_frame = true;
+    InterpretFrame(hud, skeleton_frame.as<uint8_t*>(), dt_ms);
+    result = X_E_SUCCESS;
+  }
+  // The system has the player's input while its UI is open.
+  if (kernel_state()->xam_state()->IsUIActive()) {
+    result = 0x8301000B;
+  }
+  return result;
+}
+DECLARE_XAM_EXPORT1(XamNuiHudInterpretFrame, kNone, kImplemented);
+
+// The enrollment index of the engaged player in the last frame the HUD
+// interpreted, or -2.
+dword_result_t XamNuiHudGetEngagedEnrollmentIndex_entry() {
+  NuiHudState& hud = GetHudState();
+  std::lock_guard<std::mutex> lock(hud.mutex);
+  const uint32_t engaged = kernel_state()->nui()->GetEngagedTrackingId();
+  if (hud.interpreted && engaged) {
+    for (uint32_t i = 0; i < kSkeletonCount; ++i) {
+      if (hud.tracking_ids[i] == engaged) {
+        return hud.enrollment_indices[i];
+      }
+    }
+  }
+  return 0xFFFFFFFE;
+}
+DECLARE_XAM_EXPORT1(XamNuiHudGetEngagedEnrollmentIndex, kNone, kImplemented);
+
+// xam hands the setting to its HUD (0x81692C48), which nothing here draws.
+dword_result_t XamNuiHudEnableInputFilter_entry(dword_t enable) {
+  if (XamNuiHudIsEnabled_entry()) {
+    NuiHudState& hud = GetHudState();
+    std::lock_guard<std::mutex> lock(hud.mutex);
+    hud.input_filter = enable;
+  }
+  return X_E_SUCCESS;
+}
+DECLARE_XAM_EXPORT1(XamNuiHudEnableInputFilter, kNone, kSketchy);
 
 }  // namespace xam
 }  // namespace kernel

@@ -66,6 +66,7 @@ All are in the `[HID]` section of the config, except `allow_nui_initialization`.
 | `kinect_microphone_gain` | Multiplier on the microphone samples titles get; 8 by default, which Kinect speech recognition needs. |
 | `kinect_auto_tilt` | Tilt the sensor to frame the nearest tracked player from head to feet; on by default. |
 | `kinect_elevation` | The angle titles tilt the sensor to when they start. Saved by auto tilt and by the Kinect Tuner's tilt slider. |
+| `kinect_guide_gesture` | Open the Kinect Guide on the guide gesture (the left arm held out about 45 degrees down for three seconds) in titles that leave it to the system; on by default. |
 | `kinect_mirror` | Mirror the images before titles get them. |
 | `kinect_use_usbdk` | Windows only: UsbDk rather than WinUSB. |
 | `kinect_record_path` | Record every frame handed to the title into this directory. |
@@ -120,6 +121,19 @@ keep them as the profile's biometric data, which the console stores on Xbox
 Live. Xenia keeps it with the profile instead, in
 `content/<profile XUID>/FFFE07D1/NuiBiometric.bin`; delete the file to forget
 the faces enrolled for that profile.
+
+## Players and gestures
+
+Titles that leave players to the system get what the console does: the two
+nearest players are tracked, a player standing too close, at the edge of the
+picture, turned away or without a hand in sight is reported with position
+only, and a player who waves a raised hand engages (becomes the one the title
+follows). The guide gesture opens the Kinect Guide. Titles with their own
+handling of players, such as Kinect Sports and Nike+ Kinect Training, aren't
+affected.
+
+Titles' depth calibration is kept in `kinect_depth_calibration.bin` in the
+storage root.
 
 ## Kinect Tuner
 

@@ -158,6 +158,9 @@ bool xeDrawProfileContent(xe::ui::ImGuiDrawer* imgui_drawer,
 bool xeXamChooseIndieGame(std::string* file_name, uint32_t* device_id,
                           std::string* display_name);
 
+// Opens the Guide (the guide button menu) for the title, as xam's Guide.
+X_RESULT xeXamShowGuide();
+
 }  // namespace xam
 }  // namespace kernel
 }  // namespace xe

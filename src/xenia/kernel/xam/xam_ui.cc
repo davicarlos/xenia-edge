@@ -1262,7 +1262,7 @@ DECLARE_XAM_EXPORT1(XamShowNuiHardwareRequiredUI, kNone, kImplemented);
 // The Guide is the guide button menu here. Titles hear it's open through
 // XN_SYS_UI, as from xam's own Guide, and the calls return without waiting
 // for it to close.
-static X_RESULT ShowGuide() {
+X_RESULT xeXamShowGuide() {
   auto show_guide = kernel_state()->emulator()->on_show_guide();
   if (!show_guide) {
     // As xam when it can't load the Guide.
@@ -1281,7 +1281,7 @@ static X_RESULT ShowGuide() {
   return X_ERROR_SUCCESS;
 }
 
-dword_result_t XamShowGuideUI_entry(dword_t user_index) { return ShowGuide(); }
+dword_result_t XamShowGuideUI_entry(dword_t user_index) { return xeXamShowGuide(); }
 DECLARE_XAM_EXPORT1(XamShowGuideUI, kUI, kImplemented);
 
 // The Kinect Guide, which titles open on the guide gesture (4D5308C9 through
@@ -1292,9 +1292,80 @@ dword_result_t XamShowNuiGuideUI_entry(dword_t tracking_id, dword_t unk2) {
   if (result) {
     return result;
   }
-  return ShowGuide();
+  return xeXamShowGuide();
 }
 DECLARE_XAM_EXPORT1(XamShowNuiGuideUI, kUI, kImplemented);
+
+// The other Kinect versions of xam's screens check the NUI HUD, engaging the
+// player, and then show the screen (0x816C4718, 0x816C4D88, 0x816C4188 and
+// 0x816C21C8).
+dword_result_t XamShowNuiAchievementsUI_entry(dword_t tracking_id,
+                                              dword_t user_index,
+                                              dword_t title_id) {
+  auto result = kernel_state()->nui()->NuiHudCheck(tracking_id);
+  if (result) {
+    return result;
+  }
+  return XamShowAchievementsUI_entry(user_index, title_id);
+}
+DECLARE_XAM_EXPORT1(XamShowNuiAchievementsUI, kUI, kImplemented);
+
+dword_result_t XamShowNuiMarketplaceUI_entry(
+    dword_t tracking_id, dword_t user_index, dword_t ui_type,
+    qword_t offer_id, dword_t offer_type, dword_t content_category,
+    dword_t title_id) {
+  if (user_index >= XUserMaxUserCount ||
+      (ui_type != 0 && ui_type != 1 && ui_type != 4 && ui_type != 5)) {
+    return X_ERROR_INVALID_PARAMETER;
+  }
+  auto result = kernel_state()->nui()->NuiHudCheck(tracking_id);
+  if (result) {
+    return result;
+  }
+  return XamShowMarketplaceUI_entry(user_index, ui_type, offer_id, offer_type,
+                                    content_category, title_id);
+}
+DECLARE_XAM_EXPORT1(XamShowNuiMarketplaceUI, kUI, kSketchy);
+
+dword_result_t XamShowNuiMarketplaceDownloadItemsUI_entry() {
+  // Not in xam's Kinect screens.
+  return 0x78;  // ERROR_CALL_NOT_IMPLEMENTED
+}
+DECLARE_XAM_EXPORT1(XamShowNuiMarketplaceDownloadItemsUI, kUI, kImplemented);
+
+// xam shows another player's gamer card from Xbox Live, and refuses one of
+// the user's own XUIDs. Here only the signed-in profiles have gamer cards.
+dword_result_t XamShowNuiGamerCardUIForXUID_entry(dword_t tracking_id,
+                                                  dword_t user_index,
+                                                  qword_t xuid) {
+  auto result = kernel_state()->nui()->NuiHudCheck(tracking_id);
+  if (result) {
+    return result;
+  }
+  for (uint32_t i = 0; i < XUserMaxUserCount; ++i) {
+    auto user = kernel_state()->xam_state()->GetUserProfile(i);
+    if (xuid && user && user->xuid() == xuid) {
+      return XamShowGamerCardUI_entry(i);
+    }
+  }
+  return X_ERROR_ACCESS_DENIED;
+}
+DECLARE_XAM_EXPORT1(XamShowNuiGamerCardUIForXUID, kUI, kSketchy);
+
+dword_result_t XamShowNuiControllerRequiredUI_entry(dword_t tracking_id) {
+  auto result = kernel_state()->nui()->NuiHudCheck(tracking_id);
+  if (result) {
+    return result;
+  }
+  const Emulator* emulator = kernel_state()->emulator();
+  kernel_state()->xam_state()->is_xam_dialog_present_.store(true);
+  return xeXamDispatchDialogAsync<MessageBoxDialog>(
+      new MessageBoxDialog(emulator->imgui_drawer(), emulator->input_system(),
+                           "Controller required",
+                           "Connect a controller to continue.", {"OK"}, 0),
+      [](MessageBoxDialog*) {});
+}
+DECLARE_XAM_EXPORT1(XamShowNuiControllerRequiredUI, kUI, kImplemented);
 
 }  // namespace xam
 }  // namespace kernel
