@@ -105,6 +105,14 @@ time.
 Without the firmware the tilt is simulated: titles see the angle they set,
 and the sensor stays still.
 
+## Kinect ID
+
+Kinect titles that recognize faces (Kinect ID) enroll them themselves and
+keep them as the profile's biometric data, which the console stores on Xbox
+Live. Xenia keeps it with the profile instead, in
+`content/<profile XUID>/FFFE07D1/NuiBiometric.bin`; delete the file to forget
+the faces enrolled for that profile.
+
 ## Kinect Tuner
 
 With a title running, the guide button menu has a Kinect Tuner: live depth
