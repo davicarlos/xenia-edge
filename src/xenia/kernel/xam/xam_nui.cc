@@ -20,6 +20,9 @@
 #include "xenia/kernel/nui.h"
 #include "xenia/kernel/nui_audio.h"
 #include "xenia/kernel/util/shim_utils.h"
+#include "xenia/kernel/xam/user_profile.h"
+#include "xenia/kernel/xam/user_settings.h"
+#include "xenia/kernel/xam/user_tracker.h"
 #include "xenia/kernel/xam/xam_private.h"
 #include "xenia/xbox.h"
 
@@ -513,37 +516,113 @@ dword_result_t XamNuiIdentityAbort_entry(dword_t unk) {
 }
 DECLARE_XAM_EXPORT1(XamNuiIdentityAbort, kNone, kStub);
 
+// Kinect ID enrollment of a signed-in user; nobody is ever enrolled, for which
+// xam reports index -2.
 dword_result_t XamUserNuiGetEnrollmentIndex_entry(dword_t user_index,
                                                   lpdword_t enrollment_index) {
-  if (enrollment_index) {
-    *enrollment_index = 0xFFFFFFFF;
+  if (user_index >= XUserMaxUserCount || !enrollment_index) {
+    return X_E_INVALIDARG;
   }
-  return X_E_FAIL;
+  *enrollment_index = 0xFFFFFFFE;
+  return X_E_NO_SUCH_USER;
 }
-DECLARE_XAM_EXPORT1(XamUserNuiGetEnrollmentIndex, kNone, kStub);
+DECLARE_XAM_EXPORT1(XamUserNuiGetEnrollmentIndex, kNone, kImplemented);
 
-// The biometric data Kinect ID keeps for a profile, to recognize its face.
-// None is ever stored; 4D53090F checks for a non-zero result or no data and
-// starts that profile without it.
-dword_result_t XamReadBiometricData_entry(qword_t xuid, lpdword_t data_ptr,
+// The Kinect ID data a title keeps for a profile, which xam stores on Xbox
+// Live and which is kept with the profile here: a version the title raises
+// with each enrollment and the title's data, up to the size in `size_ptr`.
+// 4D53090F reads it when a profile signs in and writes it after enrolling
+// the profile's face.
+static X_RESULT CompleteBiometricRequest(lpvoid_t overlapped, X_RESULT result) {
+  if (overlapped) {
+    kernel_state()->CompleteOverlappedImmediate(overlapped, result);
+    return X_ERROR_IO_PENDING;
+  }
+  return result;
+}
+
+dword_result_t XamReadBiometricData_entry(qword_t xuid, lpdword_t version_ptr,
                                           lpvoid_t buffer, lpdword_t size_ptr,
                                           lpvoid_t overlapped) {
-  if (data_ptr) {
-    *data_ptr = 0;
+  if (!version_ptr || !size_ptr) {
+    return X_ERROR_INVALID_PARAMETER;
   }
-  if (size_ptr) {
+  NUIController::BiometricData data;
+  if (!kernel_state()->nui()->ReadStoredBiometricData(xuid, data)) {
+    *version_ptr = 0;
     *size_ptr = 0;
+    return CompleteBiometricRequest(overlapped, X_ERROR_NOT_FOUND);
   }
-  return X_ERROR_NOT_FOUND;
+  if (!buffer || data.data.size() > *size_ptr) {
+    *size_ptr = static_cast<uint32_t>(data.data.size());
+    return CompleteBiometricRequest(overlapped, X_ERROR_INSUFFICIENT_BUFFER);
+  }
+  std::memcpy(buffer, data.data.data(), data.data.size());
+  *version_ptr = data.version;
+  *size_ptr = static_cast<uint32_t>(data.data.size());
+  return CompleteBiometricRequest(overlapped, X_ERROR_SUCCESS);
 }
-DECLARE_XAM_EXPORT1(XamReadBiometricData, kNone, kStub);
+DECLARE_XAM_EXPORT1(XamReadBiometricData, kNone, kImplemented);
+
+// Replaces the profile's copy; xam writes size 0 to delete it when Kinect ID
+// sign-in is turned off.
+dword_result_t XamWriteBiometricData_entry(qword_t xuid, lpdword_t version_ptr,
+                                           lpvoid_t buffer, lpdword_t size_ptr,
+                                           lpvoid_t overlapped) {
+  NUIController::BiometricData data;
+  data.version = version_ptr ? uint32_t(*version_ptr) : 0;
+  const uint32_t size = size_ptr ? uint32_t(*size_ptr) : 0;
+  if (size) {
+    if (!buffer) {
+      return X_ERROR_INVALID_PARAMETER;
+    }
+    const uint8_t* source = buffer.as<const uint8_t*>();
+    data.data.assign(source, source + size);
+  }
+  const bool written =
+      kernel_state()->nui()->WriteStoredBiometricData(xuid, data);
+  return CompleteBiometricRequest(
+      overlapped, written ? X_ERROR_SUCCESS : X_ERROR_FUNCTION_FAILED);
+}
+DECLARE_XAM_EXPORT1(XamWriteBiometricData, kNone, kImplemented);
 
 // Other
+// Whether Kinect ID signs the profile in, kept in its dashboard settings. xam
+// also deletes the profile's biometric data when it's turned off; none is ever
+// stored here.
 dword_result_t XamUserNuiEnableBiometric_entry(dword_t user_index,
                                                int_t enable) {
-  return X_E_INVALIDARG;
+  if (user_index >= XUserMaxUserCount) {
+    return X_E_INVALIDARG;
+  }
+  const auto user_profile =
+      kernel_state()->xam_state()->GetUserProfile(user_index);
+  if (!user_profile) {
+    return X_E_NO_SUCH_USER;
+  }
+  const UserSetting setting(UserSettingId::XPROFILE_NUI_BIOMETRIC_SIGNIN,
+                            int32_t(enable));
+  kernel_state()->xam_state()->user_tracker()->UpsertSetting(
+      user_profile->xuid(), kDashboardID, &setting);
+  return X_E_SUCCESS;
 }
-DECLARE_XAM_EXPORT1(XamUserNuiEnableBiometric, kNone, kStub);
+DECLARE_XAM_EXPORT1(XamUserNuiEnableBiometric, kNone, kImplemented);
+
+dword_result_t XamUserNuiIsBiometricEnabled_entry(dword_t user_index) {
+  if (user_index >= XUserMaxUserCount) {
+    return 0;
+  }
+  const auto user_profile =
+      kernel_state()->xam_state()->GetUserProfile(user_index);
+  if (!user_profile) {
+    return 0;
+  }
+  const auto setting = kernel_state()->xam_state()->user_tracker()->GetSetting(
+      user_profile, kDashboardID,
+      static_cast<uint32_t>(UserSettingId::XPROFILE_NUI_BIOMETRIC_SIGNIN));
+  return setting && std::get<int32_t>(setting->get_host_data()) != 0;
+}
+DECLARE_XAM_EXPORT1(XamUserNuiIsBiometricEnabled, kNone, kImplemented);
 
 struct X_NUI_PLAYER_ENGAGEMENT_UPDATE {
   xe::be<uint32_t> engaged_tracking_id;

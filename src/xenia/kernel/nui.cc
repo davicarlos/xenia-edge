@@ -11,14 +11,20 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
+#include <filesystem>
 #include "xenia/base/assert.h"
 #include "xenia/base/cvar.h"
+#include "xenia/base/filesystem.h"
 #include "xenia/config.h"
 #include "xenia/base/logging.h"
 #include "xenia/hid/kinect/usb_audio.h"
 #include "xenia/hid/kinect/usb_camera.h"
 #include "xenia/kernel/nui_audio.h"
 #include "xenia/kernel/kernel_state.h"
+#include "xenia/kernel/title_id_utils.h"
+#include "xenia/kernel/xam/profile_manager.h"
+#include "xenia/kernel/xam/xam_state.h"
 #include "xenia/xbox.h"
 
 DEFINE_bool(kinect_auto_tilt, true,
@@ -211,6 +217,79 @@ const std::string& NUIController::GetSerialNumber() {
     }
   });
   return serial_number_;
+}
+
+NUIController::BiometricData NUIController::GetCachedBiometricData(
+    uint64_t xuid) {
+  std::lock_guard<std::mutex> lock(biometric_mutex_);
+  auto it = cached_biometric_data_.find(xuid);
+  return it != cached_biometric_data_.end() ? it->second : BiometricData();
+}
+
+void NUIController::SetCachedBiometricData(uint64_t xuid, BiometricData data) {
+  std::lock_guard<std::mutex> lock(biometric_mutex_);
+  cached_biometric_data_[xuid] = std::move(data);
+}
+
+namespace {
+// The profile's copy: the version (big-endian) and the title's data.
+std::filesystem::path GetBiometricDataPath(uint64_t xuid) {
+  return KernelState::shared()
+             ->xam_state()
+             ->profile_manager()
+             ->GetProfileContentPath(
+             xuid, kDashboardID) /
+         "NuiBiometric.bin";
+}
+}  // namespace
+
+bool NUIController::ReadStoredBiometricData(uint64_t xuid,
+                                            BiometricData& data) {
+  std::lock_guard<std::mutex> lock(biometric_mutex_);
+  FILE* file = xe::filesystem::OpenFile(GetBiometricDataPath(xuid), "rb");
+  if (!file) {
+    return false;
+  }
+  uint8_t version[4];
+  bool read = std::fread(version, 1, sizeof(version), file) == sizeof(version);
+  if (read) {
+    data.version = xe::load_and_swap<uint32_t>(version);
+    data.data.clear();
+    uint8_t buffer[4096];
+    size_t length;
+    while ((length = std::fread(buffer, 1, sizeof(buffer), file)) > 0) {
+      data.data.insert(data.data.end(), buffer, buffer + length);
+    }
+  }
+  std::fclose(file);
+  return read && !data.data.empty();
+}
+
+bool NUIController::WriteStoredBiometricData(uint64_t xuid,
+                                             const BiometricData& data) {
+  std::lock_guard<std::mutex> lock(biometric_mutex_);
+  const std::filesystem::path path = GetBiometricDataPath(xuid);
+  std::error_code error;
+  if (data.data.empty()) {
+    std::filesystem::remove(path, error);
+    return true;
+  }
+  std::filesystem::create_directories(path.parent_path(), error);
+  FILE* file = xe::filesystem::OpenFile(path, "wb");
+  if (!file) {
+    XELOGE("NUI: cannot write the Kinect ID data to {}", xe::path_to_utf8(path));
+    return false;
+  }
+  uint8_t version[4];
+  xe::store_and_swap<uint32_t>(version, data.version);
+  const bool written =
+      std::fwrite(version, 1, sizeof(version), file) == sizeof(version) &&
+      std::fwrite(data.data.data(), 1, data.data.size(), file) ==
+          data.data.size();
+  std::fclose(file);
+  XELOGI("NUI: saved {} bytes of Kinect ID data for {:016X}", data.data.size(),
+         xuid);
+  return written;
 }
 
 int32_t NUIController::GetCalibratedElevation() const {

@@ -9,6 +9,8 @@
 
 #include "xenia/kernel/xam/apps/xam_app.h"
 
+#include <cstring>
+
 #include "xenia/base/logging.h"
 #include "xenia/kernel/kernel_state.h"
 #include "xenia/kernel/nui.h"
@@ -289,18 +291,68 @@ X_HRESULT XamApp::DispatchMessageSync(uint32_t message, uint32_t buffer_ptr,
     }
     case 0x0002A004:
     case 0x0002A005:
-    case 0x0002A006:
-    case 0x0002A007:
-    case 0x0002A008: {
-      // Identity and biometric profile data requests, 24 bytes each, sent
-      // with XMsgStartIORequest and no overlapped during the runtime's
-      // identity initialization (0x2A005, 0x2A006) and for each signed-in
-      // profile (0x2A008 asks whether xam holds the profile's biometric data,
-      // 0x2A007 hands xam the runtime's copy). What xam does with them isn't
-      // known; the runtime only needs them to succeed, and a stamp left at 0
-      // by 0x2A008 tells it xam holds nothing.
+    case 0x0002A006: {
+      // Identity requests, 24 bytes each, sent with XMsgStartIORequest and no
+      // overlapped during the runtime's identity initialization. What xam does
+      // with them isn't known; the runtime only needs them to succeed.
       XELOGD("XamApp: NUI identity I/O request {:08X} ({} bytes)", message,
              buffer_length);
+      return X_E_SUCCESS;
+    }
+    case 0x0002A007: {
+      // Hands xam the title's Kinect ID data for a profile: {xuid, version,
+      // data pointer, size}. Titles send it after reading the profile's copy
+      // or enrolling someone, and version kBiometricNone, size 1 when the
+      // profile has none.
+      if (!buffer_ptr || buffer_length < 0x18) {
+        return X_E_INVALIDARG;
+      }
+      const uint64_t xuid = xe::load_and_swap<uint64_t>(buffer);
+      NUIController::BiometricData data;
+      data.version = xe::load_and_swap<uint32_t>(buffer + 12);
+      const uint32_t data_ptr = xe::load_and_swap<uint32_t>(buffer + 16);
+      const uint32_t size = xe::load_and_swap<uint32_t>(buffer + 20);
+      if (data_ptr && size && data.version != NUIController::kBiometricNone) {
+        const uint8_t* source = memory_->TranslateVirtual<const uint8_t*>(data_ptr);
+        data.data.assign(source, source + size);
+      }
+      XELOGD("XamApp: Kinect ID data for {:016X}: version {:08X}, {} bytes",
+             xuid, data.version, data.data.size());
+      kernel_state_->nui()->SetCachedBiometricData(xuid, std::move(data));
+      return X_E_SUCCESS;
+    }
+    case 0x0002A008: {
+      // Reads xam's copy of a profile's Kinect ID data: {xuid, version
+      // pointer (8 bytes), data pointer, size pointer, the buffer's size on
+      // input}. Version 0 tells the title xam has none yet, so it reads the
+      // profile's copy and sends it with 0x2A007. Without a data pointer it
+      // only asks for the version and size.
+      if (!buffer_ptr || buffer_length < 0x18) {
+        return X_E_INVALIDARG;
+      }
+      const uint64_t xuid = xe::load_and_swap<uint64_t>(buffer);
+      const uint32_t version_ptr = xe::load_and_swap<uint32_t>(buffer + 12);
+      const uint32_t data_ptr = xe::load_and_swap<uint32_t>(buffer + 16);
+      const uint32_t size_ptr = xe::load_and_swap<uint32_t>(buffer + 20);
+      const NUIController::BiometricData data =
+          kernel_state_->nui()->GetCachedBiometricData(xuid);
+      uint32_t size = 0;
+      if (size_ptr) {
+        auto size_out = memory_->TranslateVirtual<xe::be<uint32_t>*>(size_ptr);
+        if (data_ptr && data.data.size() > *size_out) {
+          return X_E_INVALIDARG;
+        }
+        size = static_cast<uint32_t>(data.data.size());
+        *size_out = size;
+      }
+      if (data_ptr && size) {
+        std::memcpy(memory_->TranslateVirtual(data_ptr), data.data.data(),
+                    size);
+      }
+      if (version_ptr) {
+        *memory_->TranslateVirtual<xe::be<uint64_t>*>(version_ptr) =
+            data.version;
+      }
       return X_E_SUCCESS;
     }
     case 0x0002C00C: {

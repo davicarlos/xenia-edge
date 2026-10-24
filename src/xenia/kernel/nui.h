@@ -16,6 +16,8 @@
 #include <memory>
 #include <mutex>
 #include <string>
+#include <unordered_map>
+#include <vector>
 
 #include "xenia/base/byte_order.h"
 
@@ -119,6 +121,24 @@ class NUIController {
   // a sensor.
   const std::string& GetSerialNumber();
 
+  // Kinect ID data a title keeps for a profile: the faces it enrolled, in its
+  // own format. xam holds a copy that titles fill and read through XMsg
+  // 0x2A007 and 0x2A008 and that lasts until the console is turned off;
+  // version 0 means xam has none yet, kBiometricNone that the profile has
+  // none. The profile's own copy, which xam keeps on Xbox Live, is stored
+  // with the profile here.
+  static constexpr uint32_t kBiometricNone = 0x80000000;
+  struct BiometricData {
+    uint32_t version = 0;
+    std::vector<uint8_t> data;
+  };
+  BiometricData GetCachedBiometricData(uint64_t xuid);
+  void SetCachedBiometricData(uint64_t xuid, BiometricData data);
+  // False when the profile has none.
+  bool ReadStoredBiometricData(uint64_t xuid, BiometricData& data);
+  // Empty data deletes the profile's copy.
+  bool WriteStoredBiometricData(uint64_t xuid, const BiometricData& data);
+
   // The microphone array of the attached audio device.
   NuiAudio* audio() const { return audio_.get(); }
 
@@ -144,6 +164,8 @@ class NUIController {
 
   int32_t elevation_angle_ = 0;
   uint32_t camera_flags_ = 0;
+  std::mutex biometric_mutex_;
+  std::unordered_map<uint64_t, BiometricData> cached_biometric_data_;
   std::once_flag serial_number_once_;
   std::string serial_number_;
   // Last time anything tilted the sensor; the automatic tilt waits for the
