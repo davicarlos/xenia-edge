@@ -86,8 +86,9 @@ The firmware stays loaded until the sensor loses power. With it:
 - titles that read the microphone array get it (16 kHz, four microphones),
   and their voice commands work: Nike+ Kinect Training answers "Xbox" and the
   commands after it. Xenia doesn't pass its own sound output to the titles'
-  echo cancellation, so loud game audio can reach the microphones; turn it
-  down, or lower `kinect_microphone_gain` if loud speech saturates.
+  echo cancellation, so loud game audio can reach the microphones; keep it
+  moderate. At a `kinect_microphone_gain` of 4 the first commands were
+  sometimes missed; 8 works from the start.
 
 Without the firmware the tilt is simulated: titles see the angle they set,
 and the sensor stays still.
