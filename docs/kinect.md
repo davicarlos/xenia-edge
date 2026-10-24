@@ -62,6 +62,7 @@ All are in the `[HID]` section of the config, except `allow_nui_initialization`.
 | `allow_kinect_camera` | Use the connected sensor. |
 | `allow_nui_initialization` | Report a set-up Kinect to titles. |
 | `kinect_audio_firmware_path` | Microsoft's Kinect audio firmware: `audios.bin`, or the Xbox 360 system update package holding it, `$SystemUpdate/FFFE07DF00000001`. Uploaded when the camera opens. |
+| `kinect_microphone_gain` | Multiplier on the microphone samples titles get; 8 by default, which Kinect speech recognition needs. |
 | `kinect_mirror` | Mirror the images before titles get them. |
 | `kinect_use_usbdk` | Windows only: UsbDk rather than WinUSB. |
 | `kinect_record_path` | Record every frame handed to the title into this directory. |
@@ -82,9 +83,11 @@ The firmware stays loaded until the sensor loses power. With it:
 
 - titles' tilt requests move the motor, and they read the real angle back;
 - the LED is solid green while a title uses the sensor;
-- titles that read the microphone array get it (16 kHz, four microphones).
-  Xenia doesn't pass its own sound output to the sensor's echo
-  cancellation, so loud game audio can reach the microphones.
+- titles that read the microphone array get it (16 kHz, four microphones),
+  and their voice commands work: Nike+ Kinect Training answers "Xbox" and the
+  commands after it. Xenia doesn't pass its own sound output to the titles'
+  echo cancellation, so loud game audio can reach the microphones; turn it
+  down, or lower `kinect_microphone_gain` if loud speech saturates.
 
 Without the firmware the tilt is simulated: titles see the angle they set,
 and the sensor stays still.

@@ -16,6 +16,7 @@
 
 #include "xenia/base/byte_order.h"
 #include "xenia/base/clock.h"
+#include "xenia/base/cvar.h"
 #include "xenia/base/logging.h"
 #include "xenia/base/threading.h"
 #include "xenia/cpu/processor.h"
@@ -23,6 +24,13 @@
 #include "xenia/kernel/kernel_state.h"
 #include "xenia/kernel/xboxkrnl/xboxkrnl_threading.h"
 #include "xenia/memory.h"
+
+DEFINE_int32(kinect_microphone_gain, 8,
+             "Multiply the Kinect microphone samples handed to titles by this. "
+             "The samples come off USB quieter than titles expect: at 1, "
+             "Nike+ Kinect Training hears \"Xbox\" but not the commands "
+             "after it; at 8 it hears both.",
+             "HID");
 
 namespace xe {
 namespace kernel {
@@ -216,8 +224,12 @@ void NuiAudio::CompleteRequest(const Request& request, uint16_t tic) {
           size / sizeof(int32_t),
           hid::kinect::UsbAudio::kSamplesPerWindow);
       for (uint32_t i = 0; i < count; ++i) {
-        xe::store_and_swap<int32_t>(dest + i * sizeof(int32_t),
-                                    window.microphones[channel - 1][i]);
+        const int64_t sample =
+            int64_t(window.microphones[channel - 1][i]) *
+            cvars::kinect_microphone_gain;
+        xe::store_and_swap<int32_t>(
+            dest + i * sizeof(int32_t),
+            int32_t(std::clamp<int64_t>(sample, INT32_MIN, INT32_MAX)));
       }
     }
   }
