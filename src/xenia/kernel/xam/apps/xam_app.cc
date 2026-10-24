@@ -400,13 +400,14 @@ X_HRESULT XamApp::DispatchMessageSync(uint32_t message, uint32_t buffer_ptr,
       return X_E_SUCCESS;
     }
     case 0x0002C009: {
-      // Registers (non-zero) or removes (zero) a Kinect identity callback.
-      // TODO(knuckleslee): Invoke the callback for identity notifications.
+      // Registers (non-zero) or removes (zero) the title's Kinect identity
+      // callback, which xam calls with the identity messages (0x8180E750).
       if (!buffer_ptr) {
         return X_E_INVALIDARG;
       }
-      XELOGD("XamApp: Kinect identity callback {:08X}",
-             xe::load_and_swap<uint32_t>(buffer));
+      const uint32_t callback = xe::load_and_swap<uint32_t>(buffer);
+      XELOGD("XamApp: Kinect identity callback {:08X}", callback);
+      kernel_state_->nui()->SetIdentityCallback(callback);
       return X_E_SUCCESS;
     }
     case 0x0002C00D: {

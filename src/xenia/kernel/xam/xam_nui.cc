@@ -21,6 +21,8 @@
 #include "xenia/base/cvar.h"
 #include "xenia/base/filesystem.h"
 #include "xenia/base/logging.h"
+#include "xenia/cpu/processor.h"
+#include "xenia/kernel/xthread.h"
 #include "xenia/emulator.h"
 #include "xenia/kernel/kernel_state.h"
 #include "xenia/kernel/nui.h"
@@ -104,10 +106,23 @@ dword_result_t XamXStudioRequest_entry(dword_t request_type,
 }
 DECLARE_XAM_EXPORT1(XamXStudioRequest, kNone, kImplemented);
 
-dword_result_t XamUserNuiGetUserIndex_entry(unknown_t unk, lpdword_t index) {
+// Profiles and the Kinect ID enrollments bound to them (xam's user table at
+// 0x81A82FF4, +0x30 bound and +0x34 the enrollment index).
+dword_result_t XamUserNuiGetUserIndex_entry(dword_t enrollment_index,
+                                            lpdword_t user_index) {
+  if (enrollment_index >= 8 || !user_index) {
+    return X_E_INVALIDARG;
+  }
+  auto nui = kernel_state()->nui();
+  for (uint32_t i = 0; i < XUserMaxUserCount; ++i) {
+    if (nui->GetUserEnrollment(i) == enrollment_index) {
+      *user_index = i;
+      return X_E_SUCCESS;
+    }
+  }
   return X_E_NO_SUCH_USER;
 }
-DECLARE_XAM_EXPORT1(XamUserNuiGetUserIndex, kNone, kStub);
+DECLARE_XAM_EXPORT1(XamUserNuiGetUserIndex, kNone, kImplemented);
 
 dword_result_t XamUserNuiGetUserIndexForSignin_entry(lpdword_t user_index) {
   if (!user_index) {
@@ -126,14 +141,47 @@ dword_result_t XamUserNuiGetUserIndexForSignin_entry(lpdword_t user_index) {
 }
 DECLARE_XAM_EXPORT1(XamUserNuiGetUserIndexForSignin, kNone, kImplemented);
 
+// The first signed-in profile without a Kinect ID enrollment bound to it.
 dword_result_t XamUserNuiGetUserIndexForBind_entry(lpdword_t user_index) {
   if (!user_index) {
     return X_E_INVALIDARG;
   }
-
+  auto nui = kernel_state()->nui();
+  for (uint32_t i = 0; i < XUserMaxUserCount; ++i) {
+    if (kernel_state()->xam_state()->IsUserSignedIn(i) &&
+        nui->GetUserEnrollment(i) == NUIController::kNoEnrollment) {
+      *user_index = i;
+      return X_E_SUCCESS;
+    }
+  }
   return X_E_FAIL;
 }
-DECLARE_XAM_EXPORT1(XamUserNuiGetUserIndexForBind, kNone, kStub);
+DECLARE_XAM_EXPORT1(XamUserNuiGetUserIndexForBind, kNone, kImplemented);
+
+dword_result_t XamUserNuiBind_entry(dword_t enrollment_index,
+                                    dword_t user_index) {
+  if (enrollment_index >= 8 || user_index >= XUserMaxUserCount) {
+    return X_E_INVALIDARG;
+  }
+  XELOGI("Kinect: enrollment {} bound to user {}", enrollment_index.value(),
+         user_index.value());
+  kernel_state()->nui()->SetUserEnrollment(user_index, enrollment_index);
+  return X_E_SUCCESS;
+}
+DECLARE_XAM_EXPORT1(XamUserNuiBind, kNone, kImplemented);
+
+dword_result_t XamUserNuiUnbind_entry(dword_t user_index) {
+  if (user_index >= XUserMaxUserCount) {
+    return X_E_INVALIDARG;
+  }
+  auto nui = kernel_state()->nui();
+  if (nui->GetUserEnrollment(user_index) == NUIController::kNoEnrollment) {
+    return X_E_NO_SUCH_USER;
+  }
+  nui->SetUserEnrollment(user_index, NUIController::kNoEnrollment);
+  return X_E_SUCCESS;
+}
+DECLARE_XAM_EXPORT1(XamUserNuiUnbind, kNone, kImplemented);
 
 struct X_NUI_DEPTH_CALIBRATION {
   uint8_t data[0x30];
@@ -554,6 +602,42 @@ dword_result_t XamNuiCameraGetTiltControllerType_entry() {
 }
 DECLARE_XAM_EXPORT1(XamNuiCameraGetTiltControllerType, kNone, kStub);
 
+// Requests to the system's tilt code (XamApp 0x2B005, 0x2B00A, 0x2B00B and
+// 0x2B00D), which xam sends only with a tilt motor. The automatic tilt here
+// is kinect_auto_tilt, following the tracked player; the system app's own
+// handling of these isn't known.
+static X_HRESULT CheckTiltController() {
+  return XamNuiCameraGetTiltControllerType_entry() ? X_E_SUCCESS
+                                                   : X_HRESULT(0x8007048F);
+}
+
+dword_result_t XamNuiCameraElevationAutoTilt_entry(float_t unk) {
+  return CheckTiltController();
+}
+DECLARE_XAM_EXPORT1(XamNuiCameraElevationAutoTilt, kNone, kSketchy);
+
+// Back to the elevation the console is calibrated to.
+dword_result_t XamNuiCameraElevationReverseAutoTilt_entry(dword_t unk) {
+  const X_HRESULT result = CheckTiltController();
+  if (result == X_E_SUCCESS) {
+    auto nui = kernel_state()->nui();
+    nui->SetElevationAngle(nui->GetCalibratedElevation());
+  }
+  return result;
+}
+DECLARE_XAM_EXPORT1(XamNuiCameraElevationReverseAutoTilt, kNone, kSketchy);
+
+dword_result_t XamNuiCameraAdjustTilt_entry(float_t unk1, float_t unk2,
+                                            dword_t unk3) {
+  return CheckTiltController();
+}
+DECLARE_XAM_EXPORT1(XamNuiCameraAdjustTilt, kNone, kStub);
+
+void XamNuiCameraElevationSetCallback_entry(dword_t callback) {
+  kernel_state()->nui()->SetTiltCallback(callback);
+}
+DECLARE_XAM_EXPORT1(XamNuiCameraElevationSetCallback, kNone, kSketchy);
+
 // Sends the console's microphone array calibration, which xam reads from the
 // MicArrayCalibrate.mec system package, to the sensor (0x817F8DE8). Here it
 // comes from kinect_audio_calibration_path; 0x8AC80005 is xam's answer when
@@ -649,15 +733,80 @@ dword_result_t XamIsNatalPlaybackEnabled_entry(unknown_t unk1, unknown_t unk2) {
 }
 DECLARE_XAM_EXPORT2(XamIsNatalPlaybackEnabled, kNone, kStub, kHighFrequency);
 
+// Bit 3 of XCONFIG_CONSOLE_NUI's flags turns voice chat through the sensor
+// off (0x816F9C38).
 dword_result_t XamNuiIsChatMicEnabled_entry() {
-  /* Notes:
-     - call ExGetXConfigSetting(7,9,&xconfig_nui,0x1c,local_40);
-     - check xconfig_nui.flag & 0x8
-     - return True or false based on result
-  */
-  return false;
+  uint32_t nui_config[0x1C / 4] = {};
+  kernel_state()->xconfig()->ReadSetting(XCONFIG_CONSOLE_CATEGORY,
+                                         XCONFIG_CONSOLE_NUI, nui_config);
+  return !(xe::byte_swap(nui_config[0]) & 0x8);
 }
 DECLARE_XAM_EXPORT1(XamNuiIsChatMicEnabled, kNone, kImplemented);
+
+void XamNuiEnableChatMic_entry(dword_t enable) {
+  kernel_state()->nui()->SetChatMicrophoneEnabled(enable != 0);
+}
+DECLARE_XAM_EXPORT1(XamNuiEnableChatMic, kNone, kImplemented);
+
+// Turns the sensor off for the console, or back on, through KinectDisabled in
+// the retail flags (0x817FA170). xam answers 0xD0000184 when it already is.
+dword_result_t XamNuiSetForceDeviceOff_entry(dword_t off) {
+  auto nui = kernel_state()->nui();
+  if (nui->IsForcedOff() == (off != 0)) {
+    return 0xD0000184;
+  }
+  XELOGI("Kinect: turned {} for the console", off ? "off" : "on");
+  nui->SetForcedOff(off != 0);
+  kernel_state()->BroadcastNotification(
+      kXNotificationSystemNUIHardwareStatusChanged,
+      kernel_state()->nui()->NuiInitialized());
+  return X_STATUS_SUCCESS | X_FACILITY_NT_BIT;
+}
+DECLARE_XAM_EXPORT1(XamNuiSetForceDeviceOff, kNone, kImplemented);
+
+// The support code the Kinect troubleshooter shows (0x817FA2E0): the sensor's
+// mode and state, the kind and code of the problem (0 when its firmware is the
+// one the console expects), that firmware's version and the serial number.
+dword_result_t XamNuiGetSupportString_entry(lpvoid_t buffer, dword_t size) {
+  if (!buffer || !size) {
+    return X_E_INVALIDARG;
+  }
+  auto nui = kernel_state()->nui();
+  const bool present = nui->NuiInitialized();
+  std::string serial = present ? nui->GetSerialNumber() : std::string();
+  serial.resize(12, '0');
+  // The firmware in the system update, fwversions.txt 01.02.0810.00.
+  const std::string text =
+      fmt::format("K:{:02d}:{:02d}:{:02d}:{:02d}:{:02d}.{:02d}.{:04d}.{:02d}:{:>12}",
+                  present ? 1 : 0, 0, 0, present ? 0 : 1, 0, 1, 2, 810, 0,
+                  serial);
+  const size_t length = std::min<size_t>(text.size(), size - 1);
+  std::memcpy(buffer.as<char*>(), text.data(), length);
+  buffer.as<char*>()[length] = '\0';
+  return X_STATUS_SUCCESS | X_FACILITY_NT_BIT;
+}
+DECLARE_XAM_EXPORT1(XamNuiGetSupportString, kNone, kSketchy);
+
+// The sensor's firmware update, which the system runs (0x817FA228 and
+// 0x817FA270); a missing firmware file opens the troubleshooter.
+dword_result_t XamNuiNatalCameraUpdateStarting_entry(dword_t unk1,
+                                                     dword_t unk2) {
+  XELOGI("Kinect: firmware update starting");
+  return X_E_SUCCESS;
+}
+DECLARE_XAM_EXPORT1(XamNuiNatalCameraUpdateStarting, kNone, kImplemented);
+
+dword_result_t XamShowNuiTroubleshooterUI_entry(dword_t user_index,
+                                                dword_t tracking_id,
+                                                dword_t flags);
+
+void XamNuiNatalCameraUpdateComplete_entry(dword_t result) {
+  XELOGI("Kinect: firmware update finished, {:08X}", result.value());
+  if (result == 0x80070002) {
+    XamShowNuiTroubleshooterUI_entry(0xFF, 0, 0);
+  }
+}
+DECLARE_XAM_EXPORT1(XamNuiNatalCameraUpdateComplete, kNone, kImplemented);
 
 /* HUD Notes:
    - XamNuiHudGetEngagedTrackingID, XamNuiHudIsEnabled,
@@ -765,8 +914,9 @@ dword_result_t XamUserNuiGetEnrollmentIndex_entry(dword_t user_index,
   if (user_index >= XUserMaxUserCount || !enrollment_index) {
     return X_E_INVALIDARG;
   }
-  *enrollment_index = 0xFFFFFFFE;
-  return X_E_NO_SUCH_USER;
+  *enrollment_index = kernel_state()->nui()->GetUserEnrollment(user_index);
+  return *enrollment_index == NUIController::kNoEnrollment ? X_E_NO_SUCH_USER
+                                                           : X_E_SUCCESS;
 }
 DECLARE_XAM_EXPORT1(XamUserNuiGetEnrollmentIndex, kNone, kImplemented);
 
@@ -870,6 +1020,60 @@ dword_result_t XamUserNuiIsBiometricEnabled_entry(dword_t user_index) {
   return setting && std::get<int32_t>(setting->get_host_data()) != 0;
 }
 DECLARE_XAM_EXPORT1(XamUserNuiIsBiometricEnabled, kNone, kImplemented);
+
+// xam hands these to the title's Kinect ID engine, through the callback it
+// registered (0x8180E750): message, then {size, data}.
+static X_HRESULT CallIdentityCallback(uint32_t message, uint32_t* words,
+                                      uint32_t count) {
+  const uint32_t callback = kernel_state()->nui()->GetIdentityCallback();
+  XThread* thread = XThread::GetCurrentThread();
+  if (!callback || !thread) {
+    return 0x8000FFFF;
+  }
+  auto memory = kernel_state()->memory();
+  const uint32_t buffer = memory->SystemHeapAlloc(count * 4);
+  if (!buffer) {
+    return X_E_FAIL;
+  }
+  auto guest = memory->TranslateVirtual<xe::be<uint32_t>*>(buffer);
+  for (uint32_t i = 0; i < count; ++i) {
+    guest[i] = words[i];
+  }
+  uint64_t args[] = {message, buffer};
+  const auto result = static_cast<X_HRESULT>(kernel_state()->processor()->Execute(
+      thread->thread_state(), callback, args, xe::countof(args)));
+  for (uint32_t i = 0; i < count; ++i) {
+    words[i] = guest[i];
+  }
+  memory->SystemHeapFree(buffer);
+  return result;
+}
+
+dword_result_t XamNuiIdentityGetEnrollmentInfo_entry(dword_t enrollment_index,
+                                                     lpdword_t info1,
+                                                     lpdword_t info2) {
+  uint32_t request[4] = {0x10, enrollment_index, 0, 0};
+  X_HRESULT result = CallIdentityCallback(0x2C013, request, 4);
+  if (XSUCCEEDED(result)) {
+    if (request[0] != 0x10) {
+      return 0x8000FFFF;
+    }
+    if (info1) {
+      *info1 = request[2];
+    }
+    if (info2) {
+      *info2 = request[3];
+    }
+  }
+  return result;
+}
+DECLARE_XAM_EXPORT1(XamNuiIdentityGetEnrollmentInfo, kNone, kImplemented);
+
+void XamNuiIdentityUnenroll_entry(dword_t enrollment_index) {
+  uint32_t request[2] = {8, enrollment_index};
+  CallIdentityCallback(0x2C012, request, 2);
+}
+DECLARE_XAM_EXPORT1(XamNuiIdentityUnenroll, kNone, kImplemented);
 
 struct X_NUI_PLAYER_ENGAGEMENT_UPDATE {
   xe::be<uint32_t> engaged_tracking_id;

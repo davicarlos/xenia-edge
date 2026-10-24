@@ -11,6 +11,7 @@
 #define XENIA_KERNEL_NUI_H_
 
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <memory>
@@ -155,6 +156,23 @@ class NUIController {
   void SetSkeletonSnapshot(const NuiSkeletonSnapshot& snapshot);
   NuiSkeletonSnapshot GetSkeletonSnapshot() const;
 
+  // Console settings: voice chat through the sensor (XCONFIG_CONSOLE_NUI)
+  // and the sensor turned off (KinectDisabled in the retail flags).
+  void SetChatMicrophoneEnabled(bool enabled);
+  bool IsForcedOff() const;
+  void SetForcedOff(bool off);
+
+  // The Kinect ID enrollment bound to each profile (XamUserNuiBind), or
+  // kNoEnrollment.
+  static constexpr uint32_t kNoEnrollment = 0xFFFFFFFE;
+  uint32_t GetUserEnrollment(uint32_t user_index) const;
+  void SetUserEnrollment(uint32_t user_index, uint32_t enrollment_index);
+
+  // The identity callback the title's Kinect ID engine registers through
+  // XamApp 0x2C009, which xam calls with the identity messages.
+  uint32_t GetIdentityCallback() const { return identity_callback_; }
+  void SetIdentityCallback(uint32_t callback) { identity_callback_ = callback; }
+
  private:
   // Expects motor_mutex_ held and motor_ set.
   bool SendAudioCalibration();
@@ -166,6 +184,9 @@ class NUIController {
       0x0;  // exists at 0x118 within nui data structure
   uint64_t session_id = 0x0;
   uint32_t tilt_callback_ = 0x0;
+  std::atomic<uint32_t> identity_callback_ = 0;
+  std::array<std::atomic<uint32_t>, 4> user_enrollments_ = {
+      kNoEnrollment, kNoEnrollment, kNoEnrollment, kNoEnrollment};
   uint32_t init_flags_ = 0x0;
   // Tilts the sensor so the closest tracked player fits the depth image, as
   // a console calibrated in its Kinect Tuner would be (kinect_auto_tilt).

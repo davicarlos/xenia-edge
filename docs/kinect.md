@@ -55,12 +55,14 @@ Kinect titles check that the console has a sensor set up. Enable
 
 ## Options
 
-All are in the `[HID]` section of the config, except `allow_nui_initialization`.
+All are in the `[HID]` section of the config, except `allow_nui_initialization`, `kinect_disabled` and `kinect_chat_microphone`, which are in `[Console]`.
 
 | Option | Meaning |
 |---|---|
 | `allow_kinect_camera` | Use the connected sensor. |
 | `allow_nui_initialization` | Report a set-up Kinect to titles. |
+| `kinect_disabled` | Report the sensor as turned off in the console's settings; titles that turn it off or on change it. |
+| `kinect_chat_microphone` | Let titles use the sensor's microphones for voice chat, the console's Kinect setting; on by default. |
 | `kinect_audio_firmware_path` | Microsoft's Kinect audio firmware: `audios.bin`, or the Xbox 360 system update package holding it, `$SystemUpdate/FFFE07DF00000001`. Uploaded when the camera opens. |
 | `kinect_audio_calibration_path` | The console's microphone array calibration (`MicArrayCalibrate.data`, from the `MicArrayCalibrate.mec` system package a console makes when you run its Kinect audio tuning). Sent to the sensor when it opens. |
 | `kinect_microphone_gain` | Multiplier on the microphone samples titles get; 8 by default, which Kinect speech recognition needs. |

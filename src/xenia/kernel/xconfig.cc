@@ -68,6 +68,9 @@ DEFINE_bool(allow_nui_initialization, false,
             " require avatar implementation.",
             "Console");
 
+DECLARE_bool(kinect_disabled);
+DECLARE_bool(kinect_chat_microphone);
+
 DEFINE_int32(xmp_default_volume, 70,
              "Default music volume if game doesn't set it [0-100].", "Console");
 
@@ -84,6 +87,7 @@ namespace {
 // XCONFIG_CONSOLE_NUI.
 constexpr uint16_t kNuiCalibrationSize = 0x1C;
 constexpr uint32_t kNuiCalibrated = 0x2;
+constexpr uint32_t kNuiChatMicDisabled = 0x8;
 constexpr float kNuiFramedHeight = 1800.0f;
 
 constexpr uint16_t kMaxSettingSize = 0x40;
@@ -143,7 +147,9 @@ uint16_t BuildSetting(X_CONFIG_CATEGORY category, uint16_t setting,
               out, X_RETAIL_FLAGS::DashboardInitialized |
                        (cvars::allow_nui_initialization
                             ? X_RETAIL_FLAGS::KinectInitialized
-                            : 0));
+                            : 0) |
+                       (cvars::kinect_disabled ? X_RETAIL_FLAGS::KinectDisabled
+                                               : 0));
           return 4;
         case XCONFIG_USER_COUNTRY:
           out[0] = static_cast<uint8_t>(cvars::user_country);
@@ -241,9 +247,13 @@ uint16_t BuildSetting(X_CONFIG_CATEGORY category, uint16_t setting,
           // The Kinect calibration the console's Kinect Tuner saves, as
           // 4D53090F's tilt code reads it: flags (2: calibrated, tilt
           // straight to the saved elevation rather than searching for the
-          // floor), the height to frame in mm and the elevation in degrees.
+          // floor; 8: no voice chat through the sensor, as xam's
+          // XamNuiEnableChatMic sets it), the height to frame in mm and the
+          // elevation in degrees.
           std::memset(out, 0, kNuiCalibrationSize);
-          xe::store_and_swap<uint32_t>(out, kNuiCalibrated);
+          xe::store_and_swap<uint32_t>(
+              out, kNuiCalibrated |
+                       (cvars::kinect_chat_microphone ? 0 : kNuiChatMicDisabled));
           xe::store_and_swap<float>(out + 4, kNuiFramedHeight);
           xe::store_and_swap<int32_t>(
               out + 8, kernel_state()->nui()->GetCalibratedElevation());

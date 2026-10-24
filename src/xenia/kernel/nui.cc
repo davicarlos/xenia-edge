@@ -35,6 +35,17 @@ DEFINE_bool(kinect_auto_tilt, true,
 
 DECLARE_bool(allow_kinect_camera);
 
+DEFINE_bool(kinect_disabled, false,
+            "Report the Kinect as turned off in the console's settings "
+            "(KinectDisabled), as XamNuiSetForceDeviceOff sets it.",
+            "Console");
+
+DEFINE_bool(kinect_chat_microphone, true,
+            "Let the Kinect microphones carry voice chat, the console's "
+            "Kinect setting XamNuiEnableChatMic changes.",
+            "Console");
+
+
 DEFINE_path(kinect_audio_calibration_path, "",
             "The console's Kinect microphone array calibration, "
             "MicArrayCalibrate.data from its MicArrayCalibrate.mec system "
@@ -76,12 +87,33 @@ NUIController::NUIController() : audio_(std::make_unique<NuiAudio>()) {}
 NUIController::~NUIController() = default;
 bool NUIController::NuiInitialized() {
   // TODO(boma): Proper device readiness.
-  return (KernelState::shared()->xconfig()->ReadSetting<uint32_t>(
-              X_CONFIG_CATEGORY::XCONFIG_USER_CATEGORY,
-              XCONFIG_USER_RETAIL_FLAGS) &
-          X_RETAIL_FLAGS::KinectInitialized) != 0;
+  const uint32_t flags =
+      KernelState::shared()->xconfig()->ReadSetting<uint32_t>(
+          X_CONFIG_CATEGORY::XCONFIG_USER_CATEGORY, XCONFIG_USER_RETAIL_FLAGS);
+  return (flags & X_RETAIL_FLAGS::KinectInitialized) &&
+         !(flags & X_RETAIL_FLAGS::KinectDisabled);
 }
 uint32_t NUIController::GetNUIDataPtr() { return nui_data_ptr; }
+void NUIController::SetChatMicrophoneEnabled(bool enabled) {
+  OVERRIDE_PERSIST_bool(kinect_chat_microphone, enabled);
+  config::SaveConfig();
+}
+bool NUIController::IsForcedOff() const { return cvars::kinect_disabled; }
+void NUIController::SetForcedOff(bool off) {
+  OVERRIDE_PERSIST_bool(kinect_disabled, off);
+  config::SaveConfig();
+}
+uint32_t NUIController::GetUserEnrollment(uint32_t user_index) const {
+  return user_index < user_enrollments_.size()
+             ? user_enrollments_[user_index].load()
+             : kNoEnrollment;
+}
+void NUIController::SetUserEnrollment(uint32_t user_index,
+                                      uint32_t enrollment_index) {
+  if (user_index < user_enrollments_.size()) {
+    user_enrollments_[user_index] = enrollment_index;
+  }
+}
 char NUIController::GetUnknown2() { return nui_unknown_2; }
 void NUIController::SetTiltCallback(uint32_t callback) {
   tilt_callback_ = callback;
