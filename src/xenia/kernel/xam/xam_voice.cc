@@ -61,6 +61,15 @@ dword_result_t XamVoiceGetMicArrayAudioEx_entry(dword_t request_ptr,
 }
 DECLARE_XAM_EXPORT1(XamVoiceGetMicArrayAudioEx, kNone, kSketchy);
 
+// Which users the title considers idle at the microphone array. xam keeps the
+// mask for its own voice processing and optionally signals its worker; the
+// microphones are read the same either way here.
+dword_result_t XamVoiceSetMicArrayIdleUsers_entry(dword_t idle_users,
+                                                  dword_t signal) {
+  return X_ERROR_SUCCESS;
+}
+DECLARE_XAM_EXPORT1(XamVoiceSetMicArrayIdleUsers, kNone, kImplemented);
+
 dword_result_t XamVoiceGetMicArrayUnderrunStatus_entry(lpdword_t flags_ptr,
                                                        lpdword_t count_ptr) {
   // Windows that would have overrun are dropped on the host, and missing ones
