@@ -277,7 +277,8 @@ bool NUIController::WriteStoredBiometricData(uint64_t xuid,
   std::filesystem::create_directories(path.parent_path(), error);
   FILE* file = xe::filesystem::OpenFile(path, "wb");
   if (!file) {
-    XELOGE("NUI: cannot write the Kinect ID data to {}", xe::path_to_utf8(path));
+    XELOGE("NUI: cannot write the Kinect ID data to {}",
+           xe::strip_pii(xe::path_to_utf8(path)));
     return false;
   }
   uint8_t version[4];

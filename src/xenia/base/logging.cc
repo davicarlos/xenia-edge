@@ -631,7 +631,8 @@ void SetLogFile(const std::filesystem::path& path) {
   FILE* file = OpenLogFile(path, !cvars::log_append);
   deferred_file_sink_->Attach(file);
   if (!file) {
-    XELOGE("Failed to open the log file {}", path);
+    XELOGE("Failed to open the log file {}",
+           xe::strip_pii(xe::path_to_utf8(path)));
   }
 #endif  // !XE_PLATFORM_ANDROID
 }

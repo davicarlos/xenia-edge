@@ -80,7 +80,8 @@ class RecordingCamera : public UsbCamera {
                   kCalibrationBytes) ||
         std::memcmp(calibration_bytes.data(), kCalibrationMagic,
                     sizeof(kCalibrationMagic)) != 0) {
-      XELOGE("Kinect: {} holds no recording calibration", directory);
+      XELOGE("Kinect: {} holds no recording calibration",
+             xe::strip_pii(xe::path_to_utf8(directory)));
       return false;
     }
     const uint8_t* in = calibration_bytes.data() + sizeof(kCalibrationMagic);
@@ -95,7 +96,8 @@ class RecordingCamera : public UsbCamera {
       ++frame_count_;
     }
     if (!frame_count_) {
-      XELOGE("Kinect: {} holds no recorded frames", directory);
+      XELOGE("Kinect: {} holds no recorded frames",
+             xe::strip_pii(xe::path_to_utf8(directory)));
       return false;
     }
     running_ = true;
@@ -105,7 +107,7 @@ class RecordingCamera : public UsbCamera {
     }
     thread_->set_name("Kinect Recording");
     XELOGI("Kinect: playing {} recorded frames from {}", frame_count_,
-           directory);
+           xe::strip_pii(xe::path_to_utf8(directory)));
     return true;
   }
 

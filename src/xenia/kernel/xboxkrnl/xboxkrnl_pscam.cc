@@ -285,7 +285,8 @@ class CameraDevice {
         if (image.empty()) {
           XELOGE("PsCamDeviceRequest: cannot read the Kinect audio firmware "
                  "from {}",
-                 xe::path_to_utf8(cvars::kinect_audio_firmware_path));
+                 xe::strip_pii(
+                     xe::path_to_utf8(cvars::kinect_audio_firmware_path)));
         } else {
           XELOGI("PsCamDeviceRequest: Kinect audio firmware is {} bytes",
                  image.size());
@@ -703,12 +704,12 @@ class CameraDevice {
       if (!hid::kinect::WriteRecordingCalibration(directory,
                                                   camera_->calibration())) {
         XELOGE("PsCamDeviceRequest: can't record to {}",
-               xe::path_to_utf8(directory));
+               xe::strip_pii(xe::path_to_utf8(directory)));
         record_failed_ = true;
         return;
       }
       XELOGI("PsCamDeviceRequest: recording to {}",
-             xe::path_to_utf8(directory));
+             xe::strip_pii(xe::path_to_utf8(directory)));
     }
     if (!hid::kinect::WriteRecordingFrame(directory, record_index_, frame_,
                                           record_color_)) {
