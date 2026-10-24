@@ -164,16 +164,18 @@ struct X_PSCAM_READ_FRAME_REQUEST {
 };
 static_assert_size(X_PSCAM_READ_FRAME_REQUEST, 0x30);
 
-// A camera's settings, as the NUI runtime of 4D53090F keeps and sends them
+// Color camera settings, as the NUI runtime of 4D53090F keeps and sends them
 // (its property setters at 0x82F51FA0 and 0x82F527E8, defaults at
-// 0x82F50D98). Fractional values are 16.16 fixed point.
+// 0x82F50D98). It keeps two sets: one while playing, one while Kinect ID
+// captures faces (0x82F5E990). Fractional values are 16.16 fixed point.
 struct X_PSCAM_CAMERA_SETTINGS {
-  // kSettingsColorCamera or kSettingsInfraredCamera, and in the low bits which
-  // values the title set itself (kSettingsHas*); without them it asks the
-  // camera for the current ones (code 36).
+  // kSettingsPlay or kSettingsIdentity, and in the low bits which values the
+  // title set itself (kSettingsHas*); without them it asks the camera for the
+  // current ones (code 36).
   xe::be<uint32_t> flags;
-  // 1 to 3; 1 by default, 2 on PAL consoles. Probably light flicker.
-  xe::be<uint32_t> flicker;
+  // 1 to 3: 1 normal color, 2 high quality color (the title's NUI
+  // initialization flag 0x40, at 15 frames per second).
+  xe::be<uint32_t> color_mode;
   // Region the exposure is taken from, off by default: on, and its center
   // from the image's in pixels (-320 to 320, -240 to 240).
   xe::be<uint32_t> region_enabled;
@@ -181,10 +183,11 @@ struct X_PSCAM_CAMERA_SETTINGS {
   xe::be<int32_t> region_y;
   // Exposure compensation in stops, -1.75 to 1.75.
   xe::be<int32_t> exposure_compensation;
-  // 1 automatic exposure (the default), 0 manual.
+  // 1 automatic exposure (the default), 0 manual. Titles also run their own
+  // automatic exposure, setting the time each frame.
   xe::be<uint32_t> auto_exposure;
   // 0 to 3, up to how many frame periods automatic exposure may take; 2 by
-  // default on PAL consoles.
+  // default for high quality color.
   xe::be<uint32_t> auto_exposure_frames;
   // Metering window: left, top, width and height, as fractions of the image
   // (0.1, 0.1, 0.8, 0.8 by default).
@@ -193,18 +196,20 @@ struct X_PSCAM_CAMERA_SETTINGS {
   xe::be<int32_t> gains[3];
   // Manual exposure time in milliseconds, 0 to 2000.
   xe::be<int32_t> exposure_time;
-  // Reported by the camera; the title only reads it.
+  // Reported by the camera; 4D53090F reads it after two seconds of automatic
+  // exposure, taking 60 when it's 0.
   xe::be<uint32_t> measured;
   // The console's display refresh rate in Hz.
   xe::be<int32_t> refresh_rate;
-  // 0 to 7; 6 for the infrared camera. Its meaning isn't known.
+  // 0 to 7; 0 while playing, 6 (set as 101) while capturing faces. Its
+  // meaning isn't known.
   xe::be<uint32_t> mode;
   uint8_t unknown_4C[0x10];
 };
 static_assert_size(X_PSCAM_CAMERA_SETTINGS, 0x5C);
 
-constexpr uint32_t kSettingsColorCamera = 0x40000000;
-constexpr uint32_t kSettingsInfraredCamera = 0x80000000;
+constexpr uint32_t kSettingsPlay = 0x40000000;
+constexpr uint32_t kSettingsIdentity = 0x80000000;
 constexpr uint32_t kSettingsHasExposureTime = 0x1;
 constexpr uint32_t kSettingsHasGains = 0xE;
 constexpr int32_t kFixedOne = 0x10000;
@@ -512,10 +517,10 @@ class CameraDevice {
   }
 
   // The settings titles start from, before any code 35.
-  static X_PSCAM_CAMERA_SETTINGS DefaultSettings(uint32_t camera) {
+  static X_PSCAM_CAMERA_SETTINGS DefaultSettings(uint32_t set) {
     X_PSCAM_CAMERA_SETTINGS settings = {};
-    settings.flags = camera;
-    settings.flicker = 1;
+    settings.flags = set;
+    settings.color_mode = 1;
     settings.auto_exposure = 1;
     settings.metering_window[0] = kFixedOne / 10;
     settings.metering_window[1] = kFixedOne / 10;
@@ -572,12 +577,10 @@ class CameraDevice {
                          : kDeviceStateReady;
         return X_STATUS_SUCCESS;
       case CameraRequestCode::kSetControls: {
-        // Kept for code 36. Titles leave the color camera's exposure and white
-        // balance automatic, as the sensor already runs them, and nothing
-        // reads the infrared camera, so they aren't sent to the sensor.
+        // Kept for code 36. Titles leave exposure and white balance to the
+        // sensor's automatic ones, so they aren't sent to it.
         auto request = Guest<X_PSCAM_CONTROLS_REQUEST>(request_ptr);
-        active_settings_ =
-            request->settings.flags & kSettingsInfraredCamera ? 1 : 0;
+        active_settings_ = request->settings.flags & kSettingsIdentity ? 1 : 0;
         settings_[active_settings_] = request->settings;
         // Color frames carry the generation once this request has completed
         // (see Complete).
@@ -585,7 +588,7 @@ class CameraDevice {
         return X_STATUS_SUCCESS;
       }
       case CameraRequestCode::kGetControls: {
-        // The current settings of the camera last set. The values the title
+        // The current settings of the set last sent. The values the title
         // didn't set report the defaults: no manual exposure is running, and
         // the white balance gains are neutral.
         X_PSCAM_CAMERA_SETTINGS& settings =
@@ -913,10 +916,9 @@ class CameraDevice {
   // whose completion has run, which color frames are tagged with.
   uint8_t requested_generation_ = 0;
   std::atomic<uint8_t> settings_generation_ = 0;
-  // The color and infrared cameras' settings, and which one was set last.
+  // The play and Kinect ID settings, and which set was sent last.
   std::array<X_PSCAM_CAMERA_SETTINGS, 2> settings_ = {
-      DefaultSettings(kSettingsColorCamera),
-      DefaultSettings(kSettingsInfraredCamera)};
+      DefaultSettings(kSettingsPlay), DefaultSettings(kSettingsIdentity)};
   uint32_t active_settings_ = 0;
   std::vector<uint8_t> frame_;
   std::vector<uint8_t> record_color_;
