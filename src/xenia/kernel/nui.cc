@@ -16,6 +16,7 @@
 #include "xenia/config.h"
 #include "xenia/base/logging.h"
 #include "xenia/hid/kinect/usb_audio.h"
+#include "xenia/hid/kinect/usb_camera.h"
 #include "xenia/kernel/nui_audio.h"
 #include "xenia/kernel/kernel_state.h"
 #include "xenia/xbox.h"
@@ -24,6 +25,8 @@ DEFINE_bool(kinect_auto_tilt, true,
             "Tilt the Kinect motor so the tracked player's whole body fits "
             "the depth image, and save that elevation as kinect_elevation.",
             "HID");
+
+DECLARE_bool(allow_kinect_camera);
 
 DEFINE_int32(kinect_elevation, 0,
              "Kinect elevation in degrees the console is calibrated to, as "
@@ -197,6 +200,17 @@ void NUIController::UpdateAutoTilt(const NuiSkeletonSnapshot& snapshot) {
   if (MoveMotor(target)) {
     auto_tilted_ = true;
   }
+}
+
+const std::string& NUIController::GetSerialNumber() {
+  std::call_once(serial_number_once_, [this]() {
+    if (cvars::allow_kinect_camera) {
+      serial_number_ = hid::kinect::ReadSerialNumber();
+      XELOGI("NUI: Kinect serial number {}",
+             serial_number_.empty() ? "unknown" : serial_number_);
+    }
+  });
+  return serial_number_;
 }
 
 int32_t NUIController::GetCalibratedElevation() const {

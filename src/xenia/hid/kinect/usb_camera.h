@@ -15,6 +15,7 @@
 #include <filesystem>
 #include <functional>
 #include <memory>
+#include <string>
 #include <vector>
 
 namespace xe {
@@ -62,6 +63,9 @@ class UsbCamera {
   virtual uint32_t CopyColorFrame(uint32_t after,
                                   std::vector<uint8_t>& bayer) = 0;
 };
+
+// The connected camera's USB serial number, empty when there's no camera.
+std::string ReadSerialNumber();
 
 // A recording directory holds calibration.bin and, for each frame N,
 // depth_NNNNN.bin (packed 11-bit depth) and color_NNNNN.bin (Bayer color).

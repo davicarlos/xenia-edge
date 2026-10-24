@@ -15,6 +15,7 @@
 #include <cstdint>
 #include <memory>
 #include <mutex>
+#include <string>
 
 #include "xenia/base/byte_order.h"
 
@@ -114,6 +115,10 @@ class NUIController {
   // Reads the motor; false without one.
   bool GetTiltState(TiltState& state);
 
+  // The sensor's serial number, read from it the first time; empty without
+  // a sensor.
+  const std::string& GetSerialNumber();
+
   // The microphone array of the attached audio device.
   NuiAudio* audio() const { return audio_.get(); }
 
@@ -139,6 +144,8 @@ class NUIController {
 
   int32_t elevation_angle_ = 0;
   uint32_t camera_flags_ = 0;
+  std::once_flag serial_number_once_;
+  std::string serial_number_;
   // Last time anything tilted the sensor; the automatic tilt waits for the
   // motor and the depth image to settle after it.
   std::chrono::steady_clock::time_point last_tilt_time_;

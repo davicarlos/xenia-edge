@@ -27,6 +27,8 @@ bool LoadAudioFirmware(const std::vector<uint8_t>& image) {
 
 std::unique_ptr<UsbAudio> UsbAudio::Open() { return nullptr; }
 
+std::string ReadSerialNumber() { return {}; }
+
 }  // namespace kinect
 }  // namespace hid
 }  // namespace xe

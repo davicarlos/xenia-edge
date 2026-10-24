@@ -599,6 +599,30 @@ std::unique_ptr<UsbCamera> UsbCamera::Open(bool use_usbdk,
   return camera;
 }
 
+std::string ReadSerialNumber() {
+  libusb_context* context;
+  if (libusb_init(&context) < 0) {
+    return {};
+  }
+  std::string serial_number;
+  if (libusb_device_handle* handle = OpenDevice(context, kCameraProductId)) {
+    libusb_device_descriptor descriptor;
+    unsigned char serial[64];
+    if (libusb_get_device_descriptor(libusb_get_device(handle), &descriptor) ==
+            0 &&
+        descriptor.iSerialNumber) {
+      const int length = libusb_get_string_descriptor_ascii(
+          handle, descriptor.iSerialNumber, serial, sizeof(serial));
+      if (length > 0) {
+        serial_number.assign(reinterpret_cast<char*>(serial), length);
+      }
+    }
+    libusb_close(handle);
+  }
+  libusb_exit(context);
+  return serial_number;
+}
+
 }  // namespace kinect
 }  // namespace hid
 }  // namespace xe

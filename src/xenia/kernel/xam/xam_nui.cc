@@ -11,6 +11,7 @@
 #include <cfloat>
 #include <cmath>
 #include <cstring>
+#include <string>
 #include <utility>
 
 #include "xenia/base/logging.h"
@@ -79,13 +80,14 @@ dword_result_t XamNuiGetDeviceStatus_entry(
 }
 DECLARE_XAM_EXPORT1(XamNuiGetDeviceStatus, kNone, kStub);
 
+// xam passes the request to a handler that Kinect Studio, the development kit's
+// recording tool, installs; without one, as on a retail console, it fails.
+// Titles ask every frame.
 dword_result_t XamXStudioRequest_entry(dword_t request_type,
                                        lpdword_t result_ptr) {
-  // Return failure to indicate XStudio/dev features not available.
-  XELOGW("XamXStudioRequest called, returning X_E_FAIL");
   return X_E_FAIL;
 }
-DECLARE_XAM_EXPORT1(XamXStudioRequest, kNone, kStub);
+DECLARE_XAM_EXPORT1(XamXStudioRequest, kNone, kImplemented);
 
 dword_result_t XamUserNuiGetUserIndex_entry(unknown_t unk, lpdword_t index) {
   return X_E_NO_SUCH_USER;
@@ -316,6 +318,25 @@ dword_result_t XamNuiCameraGetTiltControllerType_entry() {
   return kinect_initialized;
 }
 DECLARE_XAM_EXPORT1(XamNuiCameraGetTiltControllerType, kNone, kStub);
+
+// Copies the sensor's serial number, NUL-terminated, into a buffer of `size`
+// bytes (titles pass 0x11).
+dword_result_t XamNuiGetDeviceSerialNumber_entry(lpvoid_t buffer_ptr,
+                                                 dword_t size) {
+  if (!buffer_ptr || !size) {
+    return X_E_INVALIDARG;
+  }
+  const std::string& serial_number = kernel_state()->nui()->GetSerialNumber();
+  if (serial_number.empty()) {
+    return X_E_DEVICE_NOT_CONNECTED;
+  }
+  char* buffer = buffer_ptr.as<char*>();
+  const size_t length = std::min<size_t>(serial_number.size(), size - 1);
+  std::memcpy(buffer, serial_number.data(), length);
+  buffer[length] = '\0';
+  return X_E_SUCCESS;
+}
+DECLARE_XAM_EXPORT1(XamNuiGetDeviceSerialNumber, kNone, kImplemented);
 
 // Sets the bits of the tilt controller's flags that `mask` selects. xam reads
 // the controller's status, merges the flags and sends them to the motor; the
