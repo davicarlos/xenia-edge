@@ -227,6 +227,11 @@ struct FirmwareCommand {
 constexpr uint32_t kCommandLed = 0x10;
 constexpr uint32_t kCommandReadStatus = 0x8032;
 constexpr uint32_t kCommandSetTilt = 0x803B;
+// Messages to the audio processing (see UsbAudio::SendAudioMessage).
+constexpr uint32_t kCommandMessageStart = 0x133;
+constexpr uint32_t kCommandMessageBlock = 0x134;
+constexpr uint32_t kCommandMessageEnd = 0x135;
+constexpr uint32_t kMessageBlockBytes = 0x4000;
 // Status block of the 0x8032 command, in 32-bit little-endian words.
 constexpr uint32_t kStatusBytes = 104;
 constexpr size_t kStatusFlagsWord = 1;
@@ -346,6 +351,41 @@ class UsbAudioLibusb : public UsbAudio {
     state.tilt_angle = int8_t(words[kStatusTiltAngleWord] & 0xFF);
     state.flags = words[kStatusFlagsWord];
     return true;
+  }
+
+  // The firmware takes messages like it takes the calibration libfreenect
+  // uploads: 0x133 with the size, 0x134 for each block at its offset, then
+  // 0x135, after which its audio loop handles the message.
+  bool SendAudioMessage(const std::vector<uint8_t>& message) override {
+    std::lock_guard<std::mutex> lock(mutex_);
+    const uint32_t size = uint32_t(message.size());
+    if (!Send(kCommandMessageStart, 0, size, sizeof(FirmwareCommand)) ||
+        !ReadReply()) {
+      return false;
+    }
+    for (uint32_t offset = 0; offset < size; offset += kMessageBlockBytes) {
+      const uint32_t block = std::min(kMessageBlockBytes, size - offset);
+      if (!Send(kCommandMessageBlock, block, offset,
+                sizeof(FirmwareCommand))) {
+        return false;
+      }
+      for (uint32_t sent = 0; sent < block; sent += kPacketBytes) {
+        const uint32_t bytes = std::min(kPacketBytes, block - sent);
+        int transferred = 0;
+        if (libusb_bulk_transfer(
+                handle_, kCommandEndpoint,
+                const_cast<uint8_t*>(message.data() + offset + sent),
+                int(bytes), &transferred, kMotorTimeoutMs) < 0 ||
+            uint32_t(transferred) != bytes) {
+          return false;
+        }
+      }
+      if (!ReadReply()) {
+        return false;
+      }
+    }
+    return Send(kCommandMessageEnd, 0, size, sizeof(FirmwareCommand)) &&
+           ReadReply();
   }
 
  private:

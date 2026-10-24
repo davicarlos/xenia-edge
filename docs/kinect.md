@@ -62,6 +62,7 @@ All are in the `[HID]` section of the config, except `allow_nui_initialization`.
 | `allow_kinect_camera` | Use the connected sensor. |
 | `allow_nui_initialization` | Report a set-up Kinect to titles. |
 | `kinect_audio_firmware_path` | Microsoft's Kinect audio firmware: `audios.bin`, or the Xbox 360 system update package holding it, `$SystemUpdate/FFFE07DF00000001`. Uploaded when the camera opens. |
+| `kinect_audio_calibration_path` | The console's microphone array calibration (`MicArrayCalibrate.data`, from the `MicArrayCalibrate.mec` system package a console makes when you run its Kinect audio tuning). Sent to the sensor when it opens. |
 | `kinect_microphone_gain` | Multiplier on the microphone samples titles get; 8 by default, which Kinect speech recognition needs. |
 | `kinect_auto_tilt` | Tilt the sensor to frame the nearest tracked player from head to feet; on by default. |
 | `kinect_elevation` | The angle titles tilt the sensor to when they start. Saved by auto tilt and by the Kinect Tuner's tilt slider. |
@@ -102,6 +103,13 @@ tilts the sensor to fit them, and once the player fits it saves that angle
 to `kinect_elevation`. Stand where you play for a few seconds the first
 time.
 
+The sensor also mixes the microphones itself, cancelling echo with a
+calibration the console measures in its Kinect audio tuning. Without that
+calibration it sends its mix only for a moment after starting, so titles get
+the four microphones and do their own; with `kinect_audio_calibration_path`
+set Xenia sends it, and titles can point the array's beam
+(`XamVoiceSetMicArrayBeamAngle`).
+
 Without the firmware the tilt is simulated: titles see the angle they set,
 and the sensor stays still.
 
@@ -128,7 +136,7 @@ the frame rate, to tell a USB problem from one in a title:
 ```sh
 xenia-kinect-camera-test --seconds=5
 xenia-kinect-camera-test --audio_firmware=path/to/audios.bin
-xenia-kinect-camera-test --motor_test --tilt=10 --led=3
+xenia-kinect-camera-test --motor_test --tilt=10 --led=3 --beam_angle=0.3
 xenia-kinect-camera-test --audio_wav=mic --seconds=5
 xenia-kinect-camera-test --record_dir=recording --seconds=30
 ```

@@ -12,6 +12,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <cstring>
 #include <filesystem>
 #include "xenia/base/assert.h"
 #include "xenia/base/cvar.h"
@@ -33,6 +34,12 @@ DEFINE_bool(kinect_auto_tilt, true,
             "HID");
 
 DECLARE_bool(allow_kinect_camera);
+
+DEFINE_path(kinect_audio_calibration_path, "",
+            "The console's Kinect microphone array calibration, "
+            "MicArrayCalibrate.data from its MicArrayCalibrate.mec system "
+            "package. Sent to the sensor's audio processing when it opens.",
+            "HID");
 
 DEFINE_int32(kinect_elevation, 0,
              "Kinect elevation in degrees the console is calibrated to, as "
@@ -320,6 +327,60 @@ void NUIController::SetMotor(std::unique_ptr<hid::kinect::UsbAudio> motor) {
     motor_->SetLed(hid::kinect::UsbAudio::Led::kGreen);
     XELOGI("NUI: using the Kinect tilt motor");
   }
+  if (motor_ && !cvars::kinect_audio_calibration_path.empty()) {
+    SendAudioCalibration();
+  }
+}
+
+bool NUIController::SetMicrophoneBeamAngle(float radians) {
+  std::lock_guard<std::mutex> lock(motor_mutex_);
+  if (!motor_) {
+    return false;
+  }
+  const uint32_t words[3] = {hid::kinect::UsbAudio::kAudioMessageMagic, 0,
+                             hid::kinect::UsbAudio::kAudioMessageBeamAngle};
+  std::vector<uint8_t> message(sizeof(words) + sizeof(radians));
+  std::memcpy(message.data(), words, sizeof(words));
+  std::memcpy(message.data() + sizeof(words), &radians, sizeof(radians));
+  return motor_->SendAudioMessage(message);
+}
+
+bool NUIController::LoadAudioCalibration() {
+  std::lock_guard<std::mutex> lock(motor_mutex_);
+  return motor_ && SendAudioCalibration();
+}
+
+bool NUIController::SendAudioCalibration() {
+  const std::filesystem::path& path = cvars::kinect_audio_calibration_path;
+  if (path.empty()) {
+    return false;
+  }
+  std::vector<uint8_t> message;
+  if (FILE* file = xe::filesystem::OpenFile(path, "rb")) {
+    uint8_t buffer[0x4000];
+    size_t read;
+    while ((read = std::fread(buffer, 1, sizeof(buffer), file)) > 0 &&
+           message.size() <= hid::kinect::UsbAudio::kAudioCalibrationBytes) {
+      message.insert(message.end(), buffer, buffer + read);
+    }
+    std::fclose(file);
+  }
+  uint32_t magic = 0;
+  if (message.size() >= sizeof(magic)) {
+    std::memcpy(&magic, message.data(), sizeof(magic));
+  }
+  if (message.size() != hid::kinect::UsbAudio::kAudioCalibrationBytes ||
+      magic != hid::kinect::UsbAudio::kAudioMessageMagic) {
+    XELOGE("NUI: {} isn't a Kinect microphone array calibration",
+           xe::strip_pii(xe::path_to_utf8(path)));
+    return false;
+  }
+  if (!motor_->SendAudioMessage(message)) {
+    XELOGE("NUI: the Kinect didn't take the microphone array calibration");
+    return false;
+  }
+  XELOGI("NUI: sent the Kinect microphone array calibration");
+  return true;
 }
 
 bool NUIController::GetTiltState(TiltState& state) {

@@ -56,6 +56,16 @@ class UsbAudio {
   virtual bool SetLed(Led led) = 0;
   virtual bool ReadState(State& state) = 0;
 
+  // Sends a message to the firmware's audio processing: {'CEMD', 0, id,
+  // payload}. Id 0 loads the microphone array calibration, 5 sets the beam
+  // angle (radians, as a float) and 6 resets the processing.
+  static constexpr uint32_t kAudioMessageMagic = 0x444D4543;
+  static constexpr uint32_t kAudioMessageCalibration = 0;
+  static constexpr uint32_t kAudioMessageBeamAngle = 5;
+  // A calibration message: the header and 0x64008 bytes of calibration.
+  static constexpr size_t kAudioCalibrationBytes = 0x64014;
+  virtual bool SendAudioMessage(const std::vector<uint8_t>& message) = 0;
+
   // 16 ms of microphone audio at 16 kHz, as the sensor sends it.
   static constexpr uint32_t kMicrophoneCount = 4;
   static constexpr uint32_t kSamplesPerWindow = 256;

@@ -117,6 +117,14 @@ class NUIController {
   // Reads the motor; false without one.
   bool GetTiltState(TiltState& state);
 
+  // Points the microphone array's beam, in radians from straight ahead
+  // (-0.873 to 0.873, or FLT_MAX for automatic). False without the sensor.
+  bool SetMicrophoneBeamAngle(float radians);
+  // Sends the microphone array calibration in kinect_audio_calibration_path
+  // to the sensor's audio processing. False without one or without the
+  // sensor.
+  bool LoadAudioCalibration();
+
   // The sensor's serial number, read from it the first time; empty without
   // a sensor.
   const std::string& GetSerialNumber();
@@ -148,6 +156,8 @@ class NUIController {
   NuiSkeletonSnapshot GetSkeletonSnapshot() const;
 
  private:
+  // Expects motor_mutex_ held and motor_ set.
+  bool SendAudioCalibration();
   mutable std::mutex skeleton_mutex_;
   NuiSkeletonSnapshot skeleton_snapshot_;
   uint32_t nui_data_ptr = 0x1;  // Meant to be a ptr to a larger structure

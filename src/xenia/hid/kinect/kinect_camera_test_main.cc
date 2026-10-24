@@ -14,6 +14,7 @@
 #include <chrono>
 #include <cstdint>
 #include <cstdio>
+#include <cstring>
 #include <filesystem>
 #include <string>
 #include <vector>
@@ -57,6 +58,10 @@ DEFINE_path(audio_wav, "",
             "firmware running.",
             "Kinect");
 DEFINE_int32(tilt, 0, "With motor_test: tilt angle in degrees.", "Kinect");
+DEFINE_double(beam_angle, 0.0,
+              "With motor_test: also point the microphone array's beam this "
+              "many radians from straight ahead.",
+              "Kinect");
 DEFINE_int32(stop_after_ms, -1,
              "With motor_test: stop the movement this long after starting it.",
              "Kinect");
@@ -254,6 +259,16 @@ int kinect_camera_test_main(const std::vector<std::string>& args) {
                motor->SetLed(UsbAudio::Led(cvars::led)) ? "ok" : "failed");
     fmt::print("Tilt {}: {}\n", cvars::tilt,
                motor->SetTiltAngle(cvars::tilt) ? "ok" : "failed");
+    {
+      const float angle = float(cvars::beam_angle);
+      const uint32_t words[3] = {UsbAudio::kAudioMessageMagic, 0,
+                                 UsbAudio::kAudioMessageBeamAngle};
+      std::vector<uint8_t> message(sizeof(words) + sizeof(angle));
+      std::memcpy(message.data(), words, sizeof(words));
+      std::memcpy(message.data() + sizeof(words), &angle, sizeof(angle));
+      fmt::print("Beam angle {}: {}\n", angle,
+                 motor->SendAudioMessage(message) ? "ok" : "failed");
+    }
     const auto start = std::chrono::steady_clock::now();
     const auto end = start + std::chrono::seconds(cvars::seconds);
     bool stopped = cvars::stop_after_ms < 0;

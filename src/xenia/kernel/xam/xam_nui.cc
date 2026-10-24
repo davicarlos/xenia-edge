@@ -322,6 +322,16 @@ dword_result_t XamNuiCameraGetTiltControllerType_entry() {
 }
 DECLARE_XAM_EXPORT1(XamNuiCameraGetTiltControllerType, kNone, kStub);
 
+// Sends the console's microphone array calibration, which xam reads from the
+// MicArrayCalibrate.mec system package, to the sensor (0x817F8DE8). Here it
+// comes from kinect_audio_calibration_path; 0x8AC80005 is xam's answer when
+// the package is missing.
+dword_result_t XamNatalDeviceAudioCalibrate_entry() {
+  return kernel_state()->nui()->LoadAudioCalibration() ? X_E_SUCCESS
+                                                       : 0x8AC80005;
+}
+DECLARE_XAM_EXPORT1(XamNatalDeviceAudioCalibrate, kNone, kImplemented);
+
 // Copies the sensor's serial number, NUL-terminated, into a buffer of `size`
 // bytes (titles pass 0x11).
 dword_result_t XamNuiGetDeviceSerialNumber_entry(lpvoid_t buffer_ptr,

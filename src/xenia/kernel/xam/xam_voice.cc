@@ -7,6 +7,8 @@
  ******************************************************************************
  */
 
+#include <cfloat>
+
 #include "xenia/kernel/kernel_state.h"
 #include "xenia/kernel/nui.h"
 #include "xenia/kernel/nui_audio.h"
@@ -60,6 +62,19 @@ dword_result_t XamVoiceGetMicArrayAudioEx_entry(dword_t request_ptr,
                                                          event_ptr);
 }
 DECLARE_XAM_EXPORT1(XamVoiceGetMicArrayAudioEx, kNone, kSketchy);
+
+// Points the microphone array's beam, in radians from straight ahead (the
+// sensor forms beams 50 degrees either way), or leaves it to the sensor with
+// FLT_MAX. xam sends it to the sensor's audio processing (0x816FBD60).
+dword_result_t XamVoiceSetMicArrayBeamAngle_entry(float_t angle) {
+  constexpr float kMaxBeamAngle = 0.873f;
+  if (angle != FLT_MAX && (angle < -kMaxBeamAngle || angle > kMaxBeamAngle)) {
+    return X_E_INVALIDARG;
+  }
+  return kernel_state()->nui()->SetMicrophoneBeamAngle(angle) ? X_E_SUCCESS
+                                                              : X_E_FAIL;
+}
+DECLARE_XAM_EXPORT1(XamVoiceSetMicArrayBeamAngle, kNone, kImplemented);
 
 // Which users the title considers idle at the microphone array. xam keeps the
 // mask for its own voice processing and optionally signals its worker; the
