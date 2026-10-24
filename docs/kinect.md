@@ -63,6 +63,8 @@ All are in the `[HID]` section of the config, except `allow_nui_initialization`.
 | `allow_nui_initialization` | Report a set-up Kinect to titles. |
 | `kinect_audio_firmware_path` | Microsoft's Kinect audio firmware: `audios.bin`, or the Xbox 360 system update package holding it, `$SystemUpdate/FFFE07DF00000001`. Uploaded when the camera opens. |
 | `kinect_microphone_gain` | Multiplier on the microphone samples titles get; 8 by default, which Kinect speech recognition needs. |
+| `kinect_auto_tilt` | Tilt the sensor to frame the nearest tracked player from head to feet; on by default. |
+| `kinect_elevation` | The angle titles tilt the sensor to when they start. Saved by auto tilt and by the Kinect Tuner's tilt slider. |
 | `kinect_mirror` | Mirror the images before titles get them. |
 | `kinect_use_usbdk` | Windows only: UsbDk rather than WinUSB. |
 | `kinect_record_path` | Record every frame handed to the title into this directory. |
@@ -85,10 +87,20 @@ The firmware stays loaded until the sensor loses power. With it:
 - the LED is solid green while a title uses the sensor;
 - titles that read the microphone array get it (16 kHz, four microphones),
   and their voice commands work: Nike+ Kinect Training answers "Xbox" and the
-  commands after it. Xenia doesn't pass its own sound output to the titles'
-  echo cancellation, so loud game audio can reach the microphones; keep it
-  moderate. At a `kinect_microphone_gain` of 4 the first commands were
-  sometimes missed; 8 works from the start.
+  commands after it. Titles' echo cancellation gets the sound the title
+  plays, so game audio from the speakers is filtered out of the commands.
+  At a `kinect_microphone_gain` of 4 the first commands were sometimes
+  missed; 8 works from the start.
+
+## Tilt
+
+The console's Kinect setup tells titles at which angle the sensor sees the
+player. Xenia reports `kinect_elevation`, and titles tilt to it when they
+start. With `kinect_auto_tilt`, Xenia watches the skeletons the title
+tracks: when the nearest player's head or feet are out of the picture, it
+tilts the sensor to fit them, and once the player fits it saves that angle
+to `kinect_elevation`. Stand where you play for a few seconds the first
+time.
 
 Without the firmware the tilt is simulated: titles see the angle they set,
 and the sensor stays still.

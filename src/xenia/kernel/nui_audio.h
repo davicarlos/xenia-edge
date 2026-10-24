@@ -57,9 +57,6 @@ class NuiAudio {
                              uint32_t* handle);
   void UnregisterMecClient(uint32_t handle);
   uint16_t render_tic() const { return render_tic_; }
-  // The frame the render driver last played, for the title's echo
-  // cancellation: 256 samples of 6 float channels. Silence here.
-  static constexpr uint32_t kRenderFrameBytes = 256 * 6 * sizeof(float);
 
  private:
   struct Request {

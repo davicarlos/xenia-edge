@@ -93,6 +93,13 @@ class NUIController {
   void SetElevationAngle(int32_t angle);
   // Stops the motor where it is.
   void StopElevationMovement();
+  // The tilt controller flags titles set with XamNuiCameraSetFlags.
+  uint32_t GetCameraFlags() const { return camera_flags_; }
+  void SetCameraFlags(uint32_t flags) { camera_flags_ = flags; }
+  // The elevation the console is calibrated to (kinect_elevation), which
+  // titles read through XCONFIG_CONSOLE_NUI; Set persists it in the config.
+  int32_t GetCalibratedElevation() const;
+  void SetCalibratedElevation(int32_t angle);
 
   // The sensor's tilt motor, LED and accelerometer, when the host has them.
   // Lights the LED green while it's attached; the motor sets it back to
@@ -110,7 +117,8 @@ class NUIController {
   // The microphone array of the attached audio device.
   NuiAudio* audio() const { return audio_.get(); }
 
-  // The skeleton frame the title's runtime last sent to xam.
+  // The skeleton frame the title's runtime last sent to xam. Also drives the
+  // automatic tilt.
   void SetSkeletonSnapshot(const NuiSkeletonSnapshot& snapshot);
   NuiSkeletonSnapshot GetSkeletonSnapshot() const;
 
@@ -124,7 +132,22 @@ class NUIController {
   uint64_t session_id = 0x0;
   uint32_t tilt_callback_ = 0x0;
   uint32_t init_flags_ = 0x0;
+  // Tilts the sensor so the closest tracked player fits the depth image, as
+  // a console calibrated in its Kinect Tuner would be (kinect_auto_tilt).
+  void UpdateAutoTilt(const NuiSkeletonSnapshot& snapshot);
+  bool MoveMotor(int32_t angle);
+
   int32_t elevation_angle_ = 0;
+  uint32_t camera_flags_ = 0;
+  // Last time anything tilted the sensor; the automatic tilt waits for the
+  // motor and the depth image to settle after it.
+  std::chrono::steady_clock::time_point last_tilt_time_;
+  // Frames in a row the player has been out of the picture.
+  uint32_t auto_tilt_out_frames_ = 0;
+  bool auto_tilted_ = false;
+  // The player fit since the last tilt; small moves out of the picture after
+  // that (a jump, a squat) don't tilt again.
+  bool auto_tilt_framed_ = false;
   std::mutex motor_mutex_;
   std::unique_ptr<hid::kinect::UsbAudio> motor_;
   // Reads motor_, so it's declared after it to go first.

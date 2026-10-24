@@ -10,9 +10,11 @@
 #ifndef XENIA_APU_AUDIO_SYSTEM_H_
 #define XENIA_APU_AUDIO_SYSTEM_H_
 
+#include <array>
 #include <atomic>
 #include <mutex>
 
+#include "xenia/apu/audio_driver.h"
 #include "xenia/base/mutex.h"
 #include "xenia/base/threading.h"
 #include "xenia/cpu/processor.h"
@@ -55,6 +57,10 @@ class AudioSystem {
                           size_t* out_index);
   void UnregisterClient(size_t index);
   void SubmitFrame(size_t index, float* samples);
+  // The mix of the frames the clients last submitted, in the guest's layout
+  // (big-endian floats, 6 channels of 256 samples): what's being played, for
+  // a title's echo cancellation (XAudioCaptureRenderDriverFrame).
+  void CaptureLastFrame(uint8_t* out);
 
   // Get performance statistics for a client
   struct ClientPerformance {
@@ -113,6 +119,9 @@ class AudioSystem {
     std::atomic<uint32_t> frames_dropped{0};
     // Held by worker during Execute; UnregisterClient waits on it.
     std::mutex callback_mutex;
+    // The last frame submitted, as the guest laid it out.
+    std::array<uint8_t, AudioDriver::kFrameSizeMax> last_frame = {};
+    bool has_last_frame = false;
   };
   ClientSlot clients_[kMaximumClientCount];
 

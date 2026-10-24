@@ -7,8 +7,11 @@
  ******************************************************************************
  */
 
+#include <algorithm>
+#include <cfloat>
 #include <cmath>
 #include <cstring>
+#include <utility>
 
 #include "xenia/base/logging.h"
 #include "xenia/emulator.h"
@@ -129,10 +132,57 @@ dword_result_t XamNuiGetDepthCalibration_entry(
 DECLARE_XAM_EXPORT1(XamNuiGetDepthCalibration, kNone, kStub);
 
 // Skeleton
-qword_result_t XamNuiSkeletonGetBestSkeletonIndex_entry(int_t unk) {
-  return 0xffffffffffffffff;
+// NUI_SKELETON_FRAME as xam reads it (big-endian): six NUI_SKELETON_DATA from
+// +0x30, each with its tracking state, tracking ID, enrollment index, user
+// index and position, and the two tracking IDs XamNuiPlayerEngagementUpdate
+// picks for the tracker at +0xACC.
+constexpr uint32_t kSkeletonFrameSkeletons = 0x30;
+constexpr uint32_t kSkeletonDataSize = 0x1C0;
+constexpr uint32_t kSkeletonCount = 6;
+constexpr uint32_t kSkeletonFrameChosenIds = 0xACC;
+constexpr uint32_t kSkeletonTracked = 2;
+
+struct X_NUI_SKELETON_DATA_HEADER {
+  xe::be<uint32_t> tracking_state;
+  xe::be<uint32_t> tracking_id;
+  xe::be<uint32_t> enrollment_index;
+  xe::be<uint32_t> user_index;
+  xe::be<float> position[4];
+};
+
+static X_NUI_SKELETON_DATA_HEADER* GetSkeleton(uint8_t* frame,
+                                               uint32_t index) {
+  return reinterpret_cast<X_NUI_SKELETON_DATA_HEADER*>(
+      frame + kSkeletonFrameSkeletons + index * kSkeletonDataSize);
 }
-DECLARE_XAM_EXPORT1(XamNuiSkeletonGetBestSkeletonIndex, kNone, kStub);
+
+// The tracked skeleton among the two XamNuiPlayerEngagementUpdate chose, in
+// the order it chose them, as xam does.
+qword_result_t XamNuiSkeletonGetBestSkeletonIndex_entry(
+    lpvoid_t skeleton_frame) {
+  if (!skeleton_frame) {
+    return uint64_t(-1);
+  }
+  uint8_t* frame = skeleton_frame.as<uint8_t*>();
+  for (uint32_t chosen = 0; chosen < 2; ++chosen) {
+    const uint32_t id = xe::load_and_swap<uint32_t>(
+        frame + kSkeletonFrameChosenIds + chosen * 4);
+    if (!id) {
+      continue;
+    }
+    for (uint32_t i = 0; i < kSkeletonCount; ++i) {
+      const auto* skeleton = GetSkeleton(frame, i);
+      if (skeleton->tracking_id == id) {
+        if (skeleton->tracking_state == kSkeletonTracked) {
+          return i;
+        }
+        break;
+      }
+    }
+  }
+  return uint64_t(-1);
+}
+DECLARE_XAM_EXPORT1(XamNuiSkeletonGetBestSkeletonIndex, kNone, kImplemented);
 
 /* XamNuiCamera Notes
    - most require message calls to xam in 0x0002Bxxx area
@@ -267,30 +317,30 @@ dword_result_t XamNuiCameraGetTiltControllerType_entry() {
 }
 DECLARE_XAM_EXPORT1(XamNuiCameraGetTiltControllerType, kNone, kStub);
 
-dword_result_t XamNuiCameraSetFlags_entry(qword_t unk1, dword_t unk2) {
-  X_STATUS result = X_E_DEVICE_NOT_CONNECTED;
-  int controller_type = XamNuiCameraGetTiltControllerType_entry();
-
+// Sets the bits of the tilt controller's flags that `mask` selects. xam reads
+// the controller's status, merges the flags and sends them to the motor; the
+// motor here keeps no flags, so they're only remembered.
+dword_result_t XamNuiCameraSetFlags_entry(qword_t flags, dword_t mask) {
+  const int controller_type = XamNuiCameraGetTiltControllerType_entry();
   if (controller_type == 1) {
     X_NUI_TILT_STATUS tilt_status = {};
     tilt_status.buffer_size = sizeof(tilt_status);
-    tilt_status.signature = make_fourcc("XtSs");  // (XtSs)?
-    result = XamNuiCameraTiltGetStatus_entry(&tilt_status);
-    if (!XSUCCEEDED(result)) {
+    tilt_status.signature = make_fourcc("XtSs");
+    const X_STATUS result = XamNuiCameraTiltGetStatus_entry(&tilt_status);
+    if (XFAILED(result)) {
       return result;
     }
-    // TODO(knuckleslee): Apply the flags once their meaning is known.
-    return X_E_FAIL;  // until implementation improves
+    NUIController* nui = kernel_state()->nui();
+    nui->SetCameraFlags((nui->GetCameraFlags() & ~uint32_t(mask)) |
+                        (uint32_t(flags) & uint32_t(mask)));
+    return X_ERROR_SUCCESS;
   }
   if (controller_type == 2) {
     return X_ERROR_SUCCESS;
   }
-  if (controller_type >= 3) {
-    return X_E_FAIL;  // until implementation improves
-  }
-  return result;
+  return X_E_DEVICE_NOT_CONNECTED;
 }
-DECLARE_XAM_EXPORT1(XamNuiCameraSetFlags, kNone, kStub);
+DECLARE_XAM_EXPORT1(XamNuiCameraSetFlags, kNone, kImplemented);
 
 dword_result_t XamIsNuiUIActive_entry() {
   return kernel_state()->xam_state()->is_xam_dialog_present_.load();
@@ -475,17 +525,72 @@ dword_result_t XamUserNuiEnableBiometric_entry(dword_t user_index,
 DECLARE_XAM_EXPORT1(XamUserNuiEnableBiometric, kNone, kStub);
 
 struct X_NUI_PLAYER_ENGAGEMENT_UPDATE {
-  uint8_t data[0x1C];
+  xe::be<uint32_t> engaged_tracking_id;
+  xe::be<uint32_t> engaged_index;
+  xe::be<uint32_t> engaged_user_index;
+  xe::be<uint32_t> engaged_enrollment_index;
+  xe::be<uint32_t> tracked_count;
+  xe::be<uint32_t> tracked_indices[2];
 };
 static_assert_size(X_NUI_PLAYER_ENGAGEMENT_UPDATE, 0x1C);
 
+// Reports the engaged player and the tracked skeletons, and picks the two
+// skeletons the tracker follows (+0xACC in the frame): the engaged player,
+// then the others by distance across the floor, tracked ones counting 0.3 m
+// closer. As xam does it.
 void XamNuiPlayerEngagementUpdate_entry(
-    lpunknown_t unk1, unknown_t unk2,
-    pointer_t<X_NUI_PLAYER_ENGAGEMENT_UPDATE> engagement_data) {
-  // always cleared before new data written
-  std::memset(engagement_data, 0, sizeof(X_NUI_PLAYER_ENGAGEMENT_UPDATE));
+    lpvoid_t skeleton_frame, dword_t engaged_tracking_id,
+    pointer_t<X_NUI_PLAYER_ENGAGEMENT_UPDATE> engagement) {
+  std::memset(engagement, 0, sizeof(X_NUI_PLAYER_ENGAGEMENT_UPDATE));
+  engagement->engaged_index = 0xFFFFFFFF;
+  engagement->engaged_user_index = 0xFE;
+  engagement->engaged_enrollment_index = 0xFFFFFFFE;
+  if (!skeleton_frame) {
+    return;
+  }
+  constexpr float kTrackedBonus = 0.3f;
+  constexpr float kMinimumDistance = 0.1f;
+  uint8_t* frame = skeleton_frame.as<uint8_t*>();
+  float chosen_distance[2] = {FLT_MAX, FLT_MAX};
+  uint32_t chosen_id[2] = {0, 0};
+  for (uint32_t i = 0; i < kSkeletonCount; ++i) {
+    const auto* skeleton = GetSkeleton(frame, i);
+    const uint32_t state = skeleton->tracking_state;
+    if (!state) {
+      continue;
+    }
+    if (state == kSkeletonTracked && engagement->tracked_count < 2) {
+      engagement->tracked_indices[engagement->tracked_count] = i;
+      engagement->tracked_count = engagement->tracked_count + 1;
+    }
+    uint32_t id = skeleton->tracking_id;
+    float distance = 0.0f;
+    if (id == engaged_tracking_id) {
+      engagement->engaged_tracking_id = id;
+      engagement->engaged_index = i;
+      engagement->engaged_user_index = skeleton->user_index;
+      engagement->engaged_enrollment_index = skeleton->enrollment_index;
+    } else {
+      const float x = skeleton->position[0];
+      const float z = skeleton->position[2];
+      distance = std::sqrt(x * x + z * z);
+      if (state == kSkeletonTracked) {
+        distance -= kTrackedBonus;
+      }
+      distance = std::max(distance, kMinimumDistance);
+    }
+    for (uint32_t slot = 0; slot < 2; ++slot) {
+      if (distance < chosen_distance[slot]) {
+        std::swap(distance, chosen_distance[slot]);
+        std::swap(id, chosen_id[slot]);
+      }
+    }
+  }
+  xe::store_and_swap<uint32_t>(frame + kSkeletonFrameChosenIds, chosen_id[0]);
+  xe::store_and_swap<uint32_t>(frame + kSkeletonFrameChosenIds + 4,
+                               chosen_id[1]);
 }
-DECLARE_XAM_EXPORT1(XamNuiPlayerEngagementUpdate, kNone, kStub);
+DECLARE_XAM_EXPORT1(XamNuiPlayerEngagementUpdate, kNone, kImplemented);
 
 }  // namespace xam
 }  // namespace kernel

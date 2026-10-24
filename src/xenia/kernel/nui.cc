@@ -10,17 +10,47 @@
 #include "xenia/kernel/nui.h"
 
 #include <algorithm>
+#include <cmath>
 #include "xenia/base/assert.h"
+#include "xenia/base/cvar.h"
+#include "xenia/config.h"
 #include "xenia/base/logging.h"
 #include "xenia/hid/kinect/usb_audio.h"
 #include "xenia/kernel/nui_audio.h"
 #include "xenia/kernel/kernel_state.h"
 #include "xenia/xbox.h"
 
+DEFINE_bool(kinect_auto_tilt, true,
+            "Tilt the Kinect motor so the tracked player's whole body fits "
+            "the depth image, and save that elevation as kinect_elevation.",
+            "HID");
+
+DEFINE_int32(kinect_elevation, 0,
+             "Kinect elevation in degrees the console is calibrated to, as "
+             "the Kinect Tuner saves it. Titles tilt the sensor straight there "
+             "instead of searching for the floor at -25 degrees first.",
+             "HID");
+
 namespace xe {
 namespace kernel {
 namespace {
 constexpr auto kTiltStatePeriod = std::chrono::milliseconds(50);
+// Automatic tilt: the depth camera sees 21.5 degrees above and below its axis;
+// the body should fit with a margin, from a bit above the head joint to a bit
+// below the feet. It tilts once the player has been out of the picture for
+// about two seconds and the image has settled after any tilt. Once the player
+// fit, it lets them leave the picture by a few degrees before tilting again.
+constexpr float kDepthHalfFieldOfView = 21.5f;
+constexpr float kAutoTiltMargin = 2.0f;
+constexpr float kAutoTiltFramedTolerance = 2.0f;
+constexpr float kAboveHead = 0.15f;
+constexpr float kBelowFeet = 0.05f;
+constexpr uint32_t kAutoTiltOutFrames = 60;
+constexpr auto kAutoTiltSettleTime = std::chrono::seconds(4);
+constexpr int32_t kAutoTiltMinimumStep = 2;
+constexpr uint32_t kHeadJoint = 3;
+// Knees, ankles and feet, whichever is lowest stands for the feet.
+constexpr uint32_t kLegJoints[] = {13, 14, 15, 17, 18, 19};
 // Motor status flags meaning it's moving or settling.
 constexpr uint32_t kMotorMovingFlags = 0x3;
 }  // namespace
@@ -61,17 +91,123 @@ uint64_t NUIController::GetSessionId() { return session_id; }
 void NUIController::SetSessionId(uint64_t id) { session_id = id; }
 
 void NUIController::SetElevationAngle(int32_t angle) {
+  MoveMotor(angle);
+}
+
+bool NUIController::MoveMotor(int32_t angle) {
   elevation_angle_ =
       std::clamp(angle, kElevationMinimum, kElevationMaximum);
   std::lock_guard<std::mutex> lock(motor_mutex_);
+  last_tilt_time_ = std::chrono::steady_clock::now();
+  auto_tilt_out_frames_ = 0;
+  auto_tilt_framed_ = false;
   if (!motor_) {
+    return false;
+  }
+  if (!motor_->SetTiltAngle(elevation_angle_)) {
+    XELOGW("NUI: the Kinect motor did not accept tilt {}", elevation_angle_);
+    return false;
+  }
+  XELOGI("NUI: tilting the Kinect to {} degrees", elevation_angle_);
+  return true;
+}
+
+void NUIController::UpdateAutoTilt(const NuiSkeletonSnapshot& snapshot) {
+  if (!cvars::kinect_auto_tilt) {
     return;
   }
-  if (motor_->SetTiltAngle(elevation_angle_)) {
-    XELOGI("NUI: tilting the Kinect to {} degrees", elevation_angle_);
-  } else {
-    XELOGW("NUI: the Kinect motor did not accept tilt {}", elevation_angle_);
+  {
+    std::lock_guard<std::mutex> lock(motor_mutex_);
+    if (!motor_ || std::chrono::steady_clock::now() - last_tilt_time_ <
+                       kAutoTiltSettleTime) {
+      return;
+    }
   }
+  // The closest tracked player.
+  const NuiSkeletonSnapshot::Skeleton* player = nullptr;
+  for (const auto& skeleton : snapshot.skeletons) {
+    if (skeleton.state == NuiSkeletonSnapshot::TrackingState::kTracked &&
+        skeleton.position[2] > 0.0f &&
+        (!player || skeleton.position[2] < player->position[2])) {
+      player = &skeleton;
+    }
+  }
+  if (!player) {
+    auto_tilt_out_frames_ = 0;
+    return;
+  }
+  // Inferred joints still carry the tracker's estimate, which is what's
+  // needed for parts outside the image.
+  const auto& head = player->joints[kHeadJoint];
+  const std::array<float, 3>* feet = nullptr;
+  for (uint32_t joint : kLegJoints) {
+    if (player->joint_states[joint] &&
+        (!feet || player->joints[joint][1] < (*feet)[1])) {
+      feet = &player->joints[joint];
+    }
+  }
+  if (!player->joint_states[kHeadJoint] || !feet || head[2] <= 0.0f ||
+      (*feet)[2] <= 0.0f) {
+    return;
+  }
+  constexpr float kDegrees = 180.0f / 3.14159265f;
+  const float top = std::atan2(head[1] + kAboveHead, head[2]) * kDegrees;
+  const float bottom =
+      std::atan2((*feet)[1] - kBelowFeet, (*feet)[2]) * kDegrees;
+  const float limit = kDepthHalfFieldOfView - kAutoTiltMargin;
+  const float allowed =
+      auto_tilt_framed_ ? kDepthHalfFieldOfView + kAutoTiltFramedTolerance
+                        : limit;
+  if (top <= allowed && bottom >= -allowed) {
+    auto_tilt_out_frames_ = 0;
+    if (top > limit || bottom < -limit) {
+      return;
+    }
+    // Framed. Titles start at this elevation from now on.
+    auto_tilt_framed_ = true;
+    if (auto_tilted_) {
+      auto_tilted_ = false;
+      if (GetCalibratedElevation() != elevation_angle_) {
+        SetCalibratedElevation(elevation_angle_);
+        config::SaveConfig();
+        XELOGI("NUI: saved {} degrees as the Kinect elevation",
+               elevation_angle_);
+      }
+    }
+    return;
+  }
+  if (++auto_tilt_out_frames_ < kAutoTiltOutFrames) {
+    return;
+  }
+  // Center the body vertically; a player too tall for the image keeps the
+  // feet in it, which the skeleton tracker needs more than the top of the
+  // head.
+  float shift = (top + bottom) * 0.5f;
+  if (top - bottom > 2.0f * limit) {
+    shift = bottom + limit;
+  }
+  const int32_t target =
+      std::clamp(int32_t(std::lround(elevation_angle_ + shift)),
+                 kElevationMinimum, kElevationMaximum);
+  if (std::abs(target - elevation_angle_) < kAutoTiltMinimumStep) {
+    return;
+  }
+  XELOGI("NUI: player spans {:.0f} to {:.0f} degrees; tilting to frame them",
+         bottom, top);
+  if (MoveMotor(target)) {
+    auto_tilted_ = true;
+  }
+}
+
+int32_t NUIController::GetCalibratedElevation() const {
+  return std::clamp(int32_t(cvars::kinect_elevation), kElevationMinimum,
+                    kElevationMaximum);
+}
+
+void NUIController::SetCalibratedElevation(int32_t angle) {
+  OVERRIDE_PERSIST_int32(
+      kinect_elevation,
+      std::clamp(angle, kElevationMinimum, kElevationMaximum));
 }
 
 void NUIController::StopElevationMovement() {
@@ -114,8 +250,11 @@ bool NUIController::GetTiltState(TiltState& state) {
 }
 
 void NUIController::SetSkeletonSnapshot(const NuiSkeletonSnapshot& snapshot) {
-  std::lock_guard<std::mutex> lock(skeleton_mutex_);
-  skeleton_snapshot_ = snapshot;
+  {
+    std::lock_guard<std::mutex> lock(skeleton_mutex_);
+    skeleton_snapshot_ = snapshot;
+  }
+  UpdateAutoTilt(snapshot);
 }
 
 NuiSkeletonSnapshot NUIController::GetSkeletonSnapshot() const {

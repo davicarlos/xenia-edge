@@ -16,6 +16,7 @@
 #include "xenia/base/memory.h"
 #include "xenia/config.h"
 #include "xenia/kernel/kernel_state.h"
+#include "xenia/kernel/nui.h"
 #include "xenia/kernel/util/shim_utils.h"
 
 // XConfig settings are kept as cvars so they flow through Xenia's existing
@@ -79,6 +80,11 @@ namespace xe {
 namespace kernel {
 
 namespace {
+
+// XCONFIG_CONSOLE_NUI.
+constexpr uint16_t kNuiCalibrationSize = 0x1C;
+constexpr uint32_t kNuiCalibrated = 0x2;
+constexpr float kNuiFramedHeight = 1800.0f;
 
 constexpr uint16_t kMaxSettingSize = 0x40;
 
@@ -231,6 +237,18 @@ uint16_t BuildSetting(X_CONFIG_CATEGORY category, uint16_t setting,
         case XCONFIG_CONSOLE_AUTO_SHUT_OFF:
           xe::store_and_swap<int16_t>(out, X_AUTO_SHUTDOWN::AutoShutdownOff);
           return 2;
+        case XCONFIG_CONSOLE_NUI: {
+          // The Kinect calibration the console's Kinect Tuner saves, as
+          // 4D53090F's tilt code reads it: flags (2: calibrated, tilt
+          // straight to the saved elevation rather than searching for the
+          // floor), the height to frame in mm and the elevation in degrees.
+          std::memset(out, 0, kNuiCalibrationSize);
+          xe::store_and_swap<uint32_t>(out, kNuiCalibrated);
+          xe::store_and_swap<float>(out + 4, kNuiFramedHeight);
+          xe::store_and_swap<int32_t>(
+              out + 8, kernel_state()->nui()->GetCalibratedElevation());
+          return kNuiCalibrationSize;
+        }
         case XCONFIG_CONSOLE_CAMERA_SETTINGS:
           xe::store_and_swap<uint32_t>(out, X_CAMERA_FLAGS::AutoAll);
           return 4;

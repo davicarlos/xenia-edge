@@ -16,6 +16,7 @@
 #include <utility>
 
 #include "third_party/imgui/imgui.h"
+#include "xenia/config.h"
 #include "xenia/kernel/kernel_state.h"
 #include "xenia/kernel/nui.h"
 #include "xenia/kernel/nui_audio.h"
@@ -332,6 +333,15 @@ void KinectTunerUI::OnDraw(ImGuiIO& io) {
                          NUIController::kElevationMaximum, "%d degrees")) {
       kernel_state()->nui()->SetElevationAngle(elevation_);
     }
+    // Titles tilt straight to the elevation saved here from then on, as on a
+    // console calibrated in its Kinect Tuner. Saved on release, not per drag.
+    if (ImGui::IsItemDeactivatedAfterEdit()) {
+      kernel_state()->nui()->SetCalibratedElevation(elevation_);
+      config::SaveConfig();
+    }
+    ImGui::TextDisabled(
+        "Titles tilt the sensor to %+d degrees when they start.",
+        kernel_state()->nui()->GetCalibratedElevation());
   } else {
     ImGui::Text("Camera elevation reported to the game");
     if (ImGui::SliderInt("degrees", &elevation_,

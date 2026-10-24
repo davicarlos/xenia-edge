@@ -7,8 +7,6 @@
  ******************************************************************************
  */
 
-#include <cstring>
-
 #include "xenia/apu/audio_system.h"
 #include "xenia/emulator.h"
 #include "xenia/kernel/kernel_state.h"
@@ -195,10 +193,11 @@ DECLARE_XBOXKRNL_EXPORT2(XAudioGetRenderDriverTic, kAudio, kSketchy,
 
 dword_result_t XAudioCaptureRenderDriverFrame_entry(dword_t handle,
                                                     lpvoid_t buffer_ptr) {
-  // The played frame the title cancels from the microphones. Xenia doesn't
-  // capture its output, so the echo reference is silence.
+  // The played frame the title cancels from the microphones: the mix of what
+  // its render driver clients last submitted.
   if (buffer_ptr) {
-    std::memset(buffer_ptr, 0, NuiAudio::kRenderFrameBytes);
+    kernel_state()->emulator()->audio_system()->CaptureLastFrame(
+        buffer_ptr.as<uint8_t*>());
   }
   return X_ERROR_SUCCESS;
 }
