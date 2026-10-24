@@ -35,6 +35,8 @@
 #include "xenia/kernel/xam/xam_ui.h"
 #include "xenia/xbox.h"
 
+DECLARE_bool(use_50Hz_mode);
+
 DEFINE_bool(kinect_guide_gesture, true,
             "Open the Kinect Guide when a player holds the guide gesture in "
             "titles that leave it to the system.",
@@ -215,6 +217,67 @@ dword_result_t XamNuiGetDepthCalibration_entry(
   return X_STATUS_SUCCESS | X_FACILITY_NT_BIT;
 }
 DECLARE_XAM_EXPORT1(XamNuiGetDepthCalibration, kNone, kImplemented);
+
+// The color camera's automatic exposure (PsCam code 46, 0x816F9B38), as
+// 4D53090F reads it at 0x82F78E40: selector 0, a 4-byte value; selector 1,
+// entries of {scene brightness, frames per second, exposure in seconds}, the
+// exposures multiples of the mains period so lights don't flicker. These are
+// the values titles fall back to without it, for 60 Hz mains, or 50 Hz with
+// use_50Hz_mode.
+struct X_NUI_TRUE_COLOR_EXPOSURE {
+  xe::be<float> brightness;
+  xe::be<float> frame_rate;
+  xe::be<float> exposure;
+};
+static_assert_size(X_NUI_TRUE_COLOR_EXPOSURE, 0xC);
+
+dword_result_t XamNuiGetTrueColorInfo_entry(dword_t unk, dword_t selector,
+                                            lpvoid_t buffer, dword_t size,
+                                            lpdword_t returned_size) {
+  struct Exposure {
+    float brightness, frame_rate, exposure;
+  };
+  static constexpr Exposure k60Hz[] = {
+      {49.1f, 7.5f, 0.1333f},   {144.5f, 10.0f, 0.1f},
+      {362.2f, 15.0f, 0.0667f}, {482.9f, 30.0f, 0.0333f},
+      {724.3f, 30.0f, 0.025f},  {1448.7f, 30.0f, 0.0167f},
+      {4102.6f, 30.0f, 0.0083f}};
+  static constexpr Exposure k50Hz[] = {
+      {49.1f, 7.5f, 0.13f},    {160.5f, 10.0f, 0.1f},
+      {402.4f, 15.0f, 0.06f},  {603.6f, 30.0f, 0.03f},
+      {1207.2f, 30.0f, 0.02f}, {3418.8f, 30.0f, 0.01f}};
+  if (!buffer || !returned_size) {
+    return X_E_INVALIDARG;
+  }
+  switch (selector) {
+    case 0:
+      if (size < 4) {
+        return X_E_INVALIDARG;
+      }
+      *buffer.as<xe::be<uint32_t>*>() = 0x4208C083;
+      *returned_size = 4;
+      return X_E_SUCCESS;
+    case 1: {
+      const Exposure* table = cvars::use_50Hz_mode ? k50Hz : k60Hz;
+      const uint32_t count = cvars::use_50Hz_mode ? uint32_t(std::size(k50Hz))
+                                                  : uint32_t(std::size(k60Hz));
+      if (size < count * sizeof(X_NUI_TRUE_COLOR_EXPOSURE)) {
+        return X_E_INVALIDARG;
+      }
+      auto out = buffer.as<X_NUI_TRUE_COLOR_EXPOSURE*>();
+      for (uint32_t i = 0; i < count; ++i) {
+        out[i].brightness = table[i].brightness;
+        out[i].frame_rate = table[i].frame_rate;
+        out[i].exposure = table[i].exposure;
+      }
+      *returned_size = count * sizeof(X_NUI_TRUE_COLOR_EXPOSURE);
+      return X_E_SUCCESS;
+    }
+    default:
+      return X_E_INVALIDARG;
+  }
+}
+DECLARE_XAM_EXPORT1(XamNuiGetTrueColorInfo, kNone, kSketchy);
 
 dword_result_t XamNuiStoreDepthCalibration_entry(
     pointer_t<X_NUI_DEPTH_CALIBRATION> depth_data) {
@@ -469,6 +532,39 @@ dword_result_t XamNuiSkeletonScoreUpdate_entry(lpvoid_t skeleton_frame,
 }
 DECLARE_XAM_EXPORT1(XamNuiSkeletonScoreUpdate, kNone, kImplemented);
 
+// Calls a callback a title registered with xam with a message and a request
+// in memory, as xam does on the caller's thread; 0x8000FFFF without one.
+static X_HRESULT CallTitleCallback(uint32_t callback, uint32_t message,
+                                   uint32_t* words, uint32_t count) {
+  XThread* thread = XThread::GetCurrentThread();
+  if (!callback || !thread) {
+    return 0x8000FFFF;
+  }
+  auto memory = kernel_state()->memory();
+  uint32_t buffer = 0;
+  if (count) {
+    buffer = memory->SystemHeapAlloc(count * 4);
+    if (!buffer) {
+      return X_E_FAIL;
+    }
+    auto guest = memory->TranslateVirtual<xe::be<uint32_t>*>(buffer);
+    for (uint32_t i = 0; i < count; ++i) {
+      guest[i] = words[i];
+    }
+  }
+  uint64_t args[] = {message, buffer};
+  const auto result = static_cast<X_HRESULT>(kernel_state()->processor()->Execute(
+      thread->thread_state(), callback, args, xe::countof(args)));
+  if (count) {
+    auto guest = memory->TranslateVirtual<xe::be<uint32_t>*>(buffer);
+    for (uint32_t i = 0; i < count; ++i) {
+      words[i] = guest[i];
+    }
+    memory->SystemHeapFree(buffer);
+  }
+  return result;
+}
+
 /* XamNuiCamera Notes
    - most require message calls to xam in 0x0002Bxxx area
 */
@@ -476,7 +572,7 @@ dword_result_t XamNuiCameraTiltSetCallback_entry(dword_t callback) {
   kernel_state()->nui()->SetTiltCallback(callback);
   return X_ERROR_SUCCESS;
 }
-DECLARE_XAM_EXPORT1(XamNuiCameraTiltSetCallback, kNone, kStub);
+DECLARE_XAM_EXPORT1(XamNuiCameraTiltSetCallback, kNone, kImplemented);
 
 dword_result_t XamNuiCameraTiltGetStatus_entry(
     pointer_t<X_NUI_TILT_STATUS> tilt_status) {
@@ -576,16 +672,24 @@ dword_result_t XamNuiCameraRememberFloor_entry(unknown_t unk1, unknown_t unk2) {
 }
 DECLARE_XAM_EXPORT1(XamNuiCameraRememberFloor, kNone, kStub);
 
-dword_result_t XamNuiCameraTiltReportStatus_entry(unknown_t unk1,
-                                                  unknown_t unk2) {
-  // Lets the title's tilt code report its state to the system; nothing
-  // listens without the motor.
-  if (!kernel_state()->nui()->NuiInitialized()) {
-    return X_E_DEVICE_NOT_CONNECTED;
+// The title's tilt engine reports its state, 0x2B006 (0x10 bytes) or 0x2B00C
+// (0xE0 bytes), to whoever set XamNuiCameraElevationSetCallback (0x816FA1A8
+// and 0x816FA848); xam answers other messages with the message itself.
+dword_result_t XamNuiCameraTiltReportStatus_entry(dword_t message,
+                                                  lpvoid_t status) {
+  if (message != 0x2B006 && message != 0x2B00C) {
+    return message.value();
   }
-  return X_ERROR_SUCCESS;
+  const uint32_t callback = kernel_state()->nui()->GetTiltStatusCallback();
+  XThread* thread = XThread::GetCurrentThread();
+  if (callback && thread) {
+    uint64_t args[] = {message, status.guest_address()};
+    kernel_state()->processor()->Execute(thread->thread_state(), callback, args,
+                                         xe::countof(args));
+  }
+  return X_E_SUCCESS;
 }
-DECLARE_XAM_EXPORT1(XamNuiCameraTiltReportStatus, kNone, kStub);
+DECLARE_XAM_EXPORT1(XamNuiCameraTiltReportStatus, kNone, kImplemented);
 
 dword_result_t XamNuiCameraGetTiltControllerType_entry() {
   /* Notes:
@@ -602,41 +706,46 @@ dword_result_t XamNuiCameraGetTiltControllerType_entry() {
 }
 DECLARE_XAM_EXPORT1(XamNuiCameraGetTiltControllerType, kNone, kStub);
 
-// Requests to the system's tilt code (XamApp 0x2B005, 0x2B00A, 0x2B00B and
-// 0x2B00D), which xam sends only with a tilt motor. The automatic tilt here
-// is kinect_auto_tilt, following the tracked player; the system app's own
-// handling of these isn't known.
-static X_HRESULT CheckTiltController() {
-  return XamNuiCameraGetTiltControllerType_entry() ? X_E_SUCCESS
-                                                   : X_HRESULT(0x8007048F);
-}
-
-dword_result_t XamNuiCameraElevationAutoTilt_entry(float_t unk) {
-  return CheckTiltController();
-}
-DECLARE_XAM_EXPORT1(XamNuiCameraElevationAutoTilt, kNone, kSketchy);
-
-// Back to the elevation the console is calibrated to.
-dword_result_t XamNuiCameraElevationReverseAutoTilt_entry(dword_t unk) {
-  const X_HRESULT result = CheckTiltController();
-  if (result == X_E_SUCCESS) {
-    auto nui = kernel_state()->nui();
-    nui->SetElevationAngle(nui->GetCalibratedElevation());
+// The system's tilt requests (XamApp 0x2B005, 0x2B00A and 0x2B00B), which xam
+// hands to the title's tilt engine (0x816F9CB8 and 0x816FA898) and only with
+// a tilt motor.
+static X_HRESULT RequestTitleTilt(uint32_t message, uint32_t* words,
+                                  uint32_t count) {
+  if (!XamNuiCameraGetTiltControllerType_entry()) {
+    return 0x8007048F;
   }
-  return result;
+  return CallTitleCallback(kernel_state()->nui()->GetTiltCallback(), message,
+                           words, count);
 }
-DECLARE_XAM_EXPORT1(XamNuiCameraElevationReverseAutoTilt, kNone, kSketchy);
+
+dword_result_t XamNuiCameraElevationAutoTilt_entry(float_t angle) {
+  const float value = angle;
+  uint32_t request[1];
+  std::memcpy(&request[0], &value, sizeof(value));
+  return RequestTitleTilt(0x2B005, request, 1);
+}
+DECLARE_XAM_EXPORT1(XamNuiCameraElevationAutoTilt, kNone, kImplemented);
+
+dword_result_t XamNuiCameraElevationReverseAutoTilt_entry(dword_t unk) {
+  uint32_t request[1] = {unk};
+  return RequestTitleTilt(0x2B00A, request, 1);
+}
+DECLARE_XAM_EXPORT1(XamNuiCameraElevationReverseAutoTilt, kNone,
+                    kImplemented);
 
 dword_result_t XamNuiCameraAdjustTilt_entry(float_t unk1, float_t unk2,
                                             dword_t unk3) {
-  return CheckTiltController();
+  uint32_t request[3] = {unk3};
+  const float values[2] = {float(unk1), float(unk2)};
+  std::memcpy(&request[1], values, sizeof(values));
+  return RequestTitleTilt(0x2B00B, request, 3);
 }
-DECLARE_XAM_EXPORT1(XamNuiCameraAdjustTilt, kNone, kStub);
+DECLARE_XAM_EXPORT1(XamNuiCameraAdjustTilt, kNone, kImplemented);
 
 void XamNuiCameraElevationSetCallback_entry(dword_t callback) {
-  kernel_state()->nui()->SetTiltCallback(callback);
+  kernel_state()->nui()->SetTiltStatusCallback(callback);
 }
-DECLARE_XAM_EXPORT1(XamNuiCameraElevationSetCallback, kNone, kSketchy);
+DECLARE_XAM_EXPORT1(XamNuiCameraElevationSetCallback, kNone, kImplemented);
 
 // Sends the console's microphone array calibration, which xam reads from the
 // MicArrayCalibrate.mec system package, to the sensor (0x817F8DE8). Here it
@@ -1021,32 +1130,12 @@ dword_result_t XamUserNuiIsBiometricEnabled_entry(dword_t user_index) {
 }
 DECLARE_XAM_EXPORT1(XamUserNuiIsBiometricEnabled, kNone, kImplemented);
 
-// xam hands these to the title's Kinect ID engine, through the callback it
-// registered (0x8180E750): message, then {size, data}.
+// xam hands identity messages to the title's Kinect ID engine, through the
+// callback it registered (0x8180E750): message, then {size, data}.
 static X_HRESULT CallIdentityCallback(uint32_t message, uint32_t* words,
                                       uint32_t count) {
-  const uint32_t callback = kernel_state()->nui()->GetIdentityCallback();
-  XThread* thread = XThread::GetCurrentThread();
-  if (!callback || !thread) {
-    return 0x8000FFFF;
-  }
-  auto memory = kernel_state()->memory();
-  const uint32_t buffer = memory->SystemHeapAlloc(count * 4);
-  if (!buffer) {
-    return X_E_FAIL;
-  }
-  auto guest = memory->TranslateVirtual<xe::be<uint32_t>*>(buffer);
-  for (uint32_t i = 0; i < count; ++i) {
-    guest[i] = words[i];
-  }
-  uint64_t args[] = {message, buffer};
-  const auto result = static_cast<X_HRESULT>(kernel_state()->processor()->Execute(
-      thread->thread_state(), callback, args, xe::countof(args)));
-  for (uint32_t i = 0; i < count; ++i) {
-    words[i] = guest[i];
-  }
-  memory->SystemHeapFree(buffer);
-  return result;
+  return CallTitleCallback(kernel_state()->nui()->GetIdentityCallback(),
+                           message, words, count);
 }
 
 dword_result_t XamNuiIdentityGetEnrollmentInfo_entry(dword_t enrollment_index,
@@ -1074,6 +1163,27 @@ void XamNuiIdentityUnenroll_entry(dword_t enrollment_index) {
   CallIdentityCallback(0x2C012, request, 2);
 }
 DECLARE_XAM_EXPORT1(XamNuiIdentityUnenroll, kNone, kImplemented);
+
+// The face picture of the last identification, as a texture header pointing
+// at the title's image (0x8180DF08): the engine answers 0x2C011 with its
+// width, height, format, pitch and address.
+dword_result_t XamNuiIdentityGetColorTexture_entry(lpvoid_t texture) {
+  uint32_t request[6] = {0x18, 0, 0, 0, 0, 0};
+  X_HRESULT result = CallIdentityCallback(0x2C011, request, 6);
+  if (XSUCCEEDED(result)) {
+    if (request[0] != 0x18) {
+      return 0x8000FFFF;
+    }
+    if (texture) {
+      auto header = texture.as<xe::be<uint32_t>*>();
+      xeXGSetTextureHeaderEx(request[1], request[2], 1, 4, request[3], 0, 1, 0,
+                             0, request[4], header, nullptr, nullptr);
+      xeXGOffsetResourceAddress(header, request[5]);
+    }
+  }
+  return result;
+}
+DECLARE_XAM_EXPORT1(XamNuiIdentityGetColorTexture, kNone, kSketchy);
 
 struct X_NUI_PLAYER_ENGAGEMENT_UPDATE {
   xe::be<uint32_t> engaged_tracking_id;

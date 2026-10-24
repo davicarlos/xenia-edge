@@ -78,7 +78,15 @@ class NUIController {
   bool NuiInitialized();
   uint32_t GetNUIDataPtr();
   char GetUnknown2();
+  // The title's tilt engine (XamNuiCameraTiltSetCallback, XamApp 0x2B007),
+  // which xam hands the system's tilt requests, and who listens to the
+  // status it reports (XamNuiCameraElevationSetCallback, 0x2B00D).
   void SetTiltCallback(uint32_t callback);
+  uint32_t GetTiltCallback() const { return tilt_callback_; }
+  void SetTiltStatusCallback(uint32_t callback) {
+    tilt_status_callback_ = callback;
+  }
+  uint32_t GetTiltStatusCallback() const { return tilt_status_callback_; }
   uint32_t GetEngagedTrackingId();
   void SetEngagedTrackingId(uint32_t tracking_id);
   uint32_t GetInitFlags();
@@ -183,7 +191,8 @@ class NUIController {
   uint32_t engaged_tracking_id =
       0x0;  // exists at 0x118 within nui data structure
   uint64_t session_id = 0x0;
-  uint32_t tilt_callback_ = 0x0;
+  std::atomic<uint32_t> tilt_callback_ = 0;
+  std::atomic<uint32_t> tilt_status_callback_ = 0;
   std::atomic<uint32_t> identity_callback_ = 0;
   std::array<std::atomic<uint32_t>, 4> user_enrollments_ = {
       kNoEnrollment, kNoEnrollment, kNoEnrollment, kNoEnrollment};
