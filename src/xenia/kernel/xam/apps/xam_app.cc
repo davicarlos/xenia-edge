@@ -384,6 +384,20 @@ X_HRESULT XamApp::DispatchMessageSync(uint32_t message, uint32_t buffer_ptr,
              xe::load_and_swap<uint32_t>(buffer));
       return X_E_SUCCESS;
     }
+    case 0x0002C00D: {
+      // Resolves whom the title's identity engine matched (4D5308C9 at
+      // 0x82A0F2B0): {match scores pointer, 0, flags (8 bytes), result
+      // pointer, scores size}. xam answers the matched enrollment, 0 to 7, or
+      // 0xFFFFFFFE when nobody matched; nobody is ever enrolled here.
+      if (!buffer_ptr) {
+        return X_E_INVALIDARG;
+      }
+      const uint32_t result_ptr = xe::load_and_swap<uint32_t>(buffer + 16);
+      if (result_ptr) {
+        *memory_->TranslateVirtual<xe::be<uint32_t>*>(result_ptr) = 0xFFFFFFFE;
+      }
+      return X_E_SUCCESS;
+    }
     // Causes dashboard to correctly process language/region change. It does not
     // contain any buffer.
     case 0x8000000D: {
