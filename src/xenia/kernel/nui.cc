@@ -224,6 +224,13 @@ void NUIController::UpdateAutoTilt(const NuiSkeletonSnapshot& snapshot) {
     }
     return;
   }
+  // Taller than the whole image: too close to the sensor, or a skeleton the
+  // tracker got wrong. No elevation frames them, and keeping the feet in
+  // would point the sensor at the floor.
+  if (top - bottom > 2.0f * kDepthHalfFieldOfView) {
+    auto_tilt_out_frames_ = 0;
+    return;
+  }
   if (++auto_tilt_out_frames_ < kAutoTiltOutFrames) {
     return;
   }
