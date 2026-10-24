@@ -1259,21 +1259,39 @@ dword_result_t XamShowNuiHardwareRequiredUI_entry(unknown_t unk1) {
 }
 DECLARE_XAM_EXPORT1(XamShowNuiHardwareRequiredUI, kNone, kImplemented);
 
-dword_result_t XamShowNuiGuideUI_entry(unknown_t tracking_id, unknown_t unk2) {
+// The Guide is the guide button menu here. Titles hear it's open through
+// XN_SYS_UI, as from xam's own Guide, and the calls return without waiting
+// for it to close.
+static X_RESULT ShowGuide() {
+  auto show_guide = kernel_state()->emulator()->on_show_guide();
+  if (!show_guide) {
+    // As xam when it can't load the Guide.
+    return X_ERROR_ACCESS_DENIED;
+  }
+  kernel_state()->BroadcastNotification(kXNotificationSystemUI, true);
+  if (!show_guide([]() {
+        kernel_state()->BroadcastNotification(kXNotificationSystemUI, false);
+      })) {
+    kernel_state()->BroadcastNotification(kXNotificationSystemUI, false);
+    return X_ERROR_ACCESS_DENIED;
+  }
+  return X_ERROR_SUCCESS;
+}
+
+dword_result_t XamShowGuideUI_entry(dword_t user_index) { return ShowGuide(); }
+DECLARE_XAM_EXPORT1(XamShowGuideUI, kUI, kImplemented);
+
+// The Kinect Guide, which titles open on the guide gesture (4D5308C9 through
+// 0x82A74D50, with 0xFF for the second argument). xam checks the NUI HUD,
+// engaging the player, then shows the Guide (message 0x21030).
+dword_result_t XamShowNuiGuideUI_entry(dword_t tracking_id, dword_t unk2) {
   auto result = kernel_state()->nui()->NuiHudCheck(tracking_id);
   if (result) {
     return result;
   }
-  /* Notes:
-   - calls xeXamNuiHudCheck, if success call XamAppRequestLoadEx(4) and if
-   succeed call XMsgSystemProcessCall and some sub function that ensures correct
-   h_result is returned
-   - if XamAppRequestLoadEx(4) fails return X_ERROR_ACCESS_DENIED
-  */
-
-  return X_ERROR_ACCESS_DENIED;
+  return ShowGuide();
 }
-DECLARE_XAM_EXPORT1(XamShowNuiGuideUI, kNone, kStub);
+DECLARE_XAM_EXPORT1(XamShowNuiGuideUI, kUI, kImplemented);
 
 }  // namespace xam
 }  // namespace kernel
