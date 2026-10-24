@@ -1904,7 +1904,8 @@ bool RenderTargetCache::WriteEdramSnapshotToFile(
     }
   }
   if (!written) {
-    XELOGE("Failed to write the EDRAM snapshot to {}", xe::path_to_utf8(path));
+    XELOGE("Failed to write the EDRAM snapshot to {}",
+           xe::strip_pii(xe::path_to_utf8(path)));
   }
   EndEdramSnapshotReadback();
   return written;

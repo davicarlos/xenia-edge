@@ -13,6 +13,7 @@
 #include <atomic>
 #include <memory>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 #include "xenia/app/game_library.h"
@@ -242,6 +243,7 @@ class EmulatorWindow {
   ProfileConfigDialog* profile_dialog_ = nullptr;
   ui::ImGuiAudioDialog* audio_dialog_ = nullptr;
   ui::ImGuiContextMenu* context_menu_ = nullptr;
+  std::unordered_set<ui::VirtualKey> hotkeys_down_;
 
   GameListPanel* game_list_panel_ = nullptr;
   std::unique_ptr<GameLibrary> game_library_;

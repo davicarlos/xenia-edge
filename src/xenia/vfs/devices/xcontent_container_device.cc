@@ -19,7 +19,8 @@ std::unique_ptr<XContentContainerDevice>
 XContentContainerDevice::CreateContentDevice(
     const std::string_view mount_path, const std::filesystem::path& host_path) {
   if (!std::filesystem::exists(host_path)) {
-    XELOGE("Path to XContent container does not exist: {}", host_path);
+    XELOGE("Path to XContent container does not exist: {}",
+           xe::strip_pii(xe::path_to_utf8(host_path)));
     return nullptr;
   }
 
@@ -75,7 +76,8 @@ XContentContainerDevice::~XContentContainerDevice() {}
 
 bool XContentContainerDevice::Initialize() {
   if (!std::filesystem::exists(host_path_)) {
-    XELOGE("Path to XContent container does not exist: {}", host_path_);
+    XELOGE("Path to XContent container does not exist: {}",
+           xe::strip_pii(xe::path_to_utf8(host_path_)));
     return false;
   }
 
@@ -83,7 +85,8 @@ bool XContentContainerDevice::Initialize() {
     return false;
   }
 
-  XELOGI("Loading XContent header file: {}", host_path_);
+  XELOGI("Loading XContent header file: {}",
+         xe::strip_pii(xe::path_to_utf8(host_path_)));
   auto header_file = xe::filesystem::OpenFile(host_path_, "rb");
   if (!header_file) {
     XELOGE("Error opening XContent header file.");

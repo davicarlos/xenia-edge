@@ -33,6 +33,7 @@
 #include "xenia/base/string.h"
 #include "xenia/base/system.h"
 #include "xenia/base/threading.h"
+#include "xenia/base/utf8.h"
 
 // TODO(benvanik): generic API? logging_win.cc?
 #if XE_PLATFORM_ANDROID
@@ -96,6 +97,46 @@ struct LogLine {
 };
 
 thread_local char thread_log_buffer_[64_KiB];
+
+static std::string FindUserName() {
+#if XE_PLATFORM_WIN32
+  const wchar_t* name = _wgetenv(L"USERNAME");
+#else
+  const char* name = std::getenv("USER");
+#endif  // XE_PLATFORM_WIN32
+  return name ? xe::path_to_utf8(name) : std::string();
+}
+
+std::string strip_pii(const std::string_view text) {
+  // Leaked as threads still logging at exit may strip text.
+  static const std::string& user_name = *new std::string(FindUserName());
+  if (user_name.empty()) {
+    return std::string(text);
+  }
+  // A quote ends a path in text such as an exception message. The placeholder
+  // is the variable the name comes from, so a pasted path still works.
+#if XE_PLATFORM_WIN32
+  constexpr std::string_view kDelimiters = "\\/\"";
+  constexpr std::string_view kPlaceholder = "%USERNAME%";
+#else
+  constexpr std::string_view kDelimiters = "/\"";
+  constexpr std::string_view kPlaceholder = "$USER";
+#endif  // XE_PLATFORM_WIN32
+  std::string stripped;
+  for (size_t start = 0; start <= text.size();) {
+    size_t end = std::min(text.find_first_of(kDelimiters, start), text.size());
+    std::string_view name = text.substr(start, end - start);
+    if (xe::utf8::equal_case(name, user_name)) {
+      name = kPlaceholder;
+    }
+    stripped += name;
+    if (end < text.size()) {
+      stripped += text[end];
+    }
+    start = end + 1;
+  }
+  return stripped;
+}
 
 FileLogSink::~FileLogSink() {
   if (file_) {

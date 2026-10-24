@@ -63,7 +63,8 @@ ContentPackage::ContentPackage(KernelState* kernel_state,
       mounted_ = true;
       fs->RegisterDevice(std::move(device));
     } else {
-      XELOGE("{}: Cannot mount content container {}", __func__, package_path);
+      XELOGE("{}: Cannot mount content container {}", __func__,
+             xe::strip_pii(xe::path_to_utf8(package_path)));
     }
   }
   fs->RegisterSymbolicLink(root_name_ + ":",

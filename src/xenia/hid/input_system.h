@@ -65,6 +65,13 @@ class InputSystem {
   void RemoveUIInputBlocker();
   bool IsUIInputBlocked() const { return ui_input_blockers_.load() > 0; }
 
+  // Called when a title launches.
+  void ResetKeystrokes() {
+    for (auto& driver : drivers_) {
+      driver->ResetKeystrokes();
+    }
+  }
+
   bool GetVibrationCvar();
   void ToggleVibration();
 

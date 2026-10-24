@@ -276,6 +276,13 @@ bool X64Backend::Initialize(Processor* processor) {
                MachineInfo::RegisterSet::VEC_TYPES;
   xmms.count = X64Emitter::XMM_COUNT;
 
+  // Allocate emitter constant data ahead of the code cache, whose OS-chosen
+  // allocations can fill the sub-2GB range it needs.
+  emitter_data_ = X64Emitter::PlaceConstData();
+  if (!emitter_data_) {
+    return false;
+  }
+
   code_cache_ = X64CodeCache::Create();
   Backend::code_cache_ = code_cache_.get();
   // Fast indirection is only viable if trampolines made it under 4GB.
@@ -286,11 +293,6 @@ bool X64Backend::Initialize(Processor* processor) {
   // HV range
   code_cache()->CommitExecutableRange(GUEST_TRAMPOLINE_BASE,
                                       GUEST_TRAMPOLINE_END);
-  // Allocate emitter constant data.
-  emitter_data_ = X64Emitter::PlaceConstData();
-  if (!emitter_data_) {
-    return false;
-  }
 
   // Generate thunks used to transition between jitted code and host code.
   XbyakAllocator allocator;

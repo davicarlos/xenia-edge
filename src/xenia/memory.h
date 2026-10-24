@@ -837,7 +837,7 @@ class Memory {
 
  private:
 #if XE_PLATFORM_MAC
-  int MapViewsMac();
+  int MapViewsMac(uint8_t* mapping_base);
 #endif
   int MapViews(uint8_t* mapping_base);
   void UnmapViews();

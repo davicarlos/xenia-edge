@@ -327,7 +327,7 @@ bool ProfileManager::MountProfile(const uint64_t xuid, std::string mount_path) {
     XELOGE(
         "MountProfile: Unable to mount {} profile; file not found or "
         "corrupted.",
-        profile_path);
+        xe::strip_pii(xe::path_to_utf8(profile_path)));
     return false;
   }
   return kernel_state_->file_system()->RegisterDevice(std::move(device));

@@ -24,7 +24,14 @@
 
 namespace xe {
 
-std::string path_to_utf8(const std::filesystem::path& path);
+// UTF-8 text of a host path. Log calls only take it through strip_pii, as host
+// paths carry the user name.
+class Utf8Path : public std::string {
+ public:
+  explicit Utf8Path(std::string text) : std::string(std::move(text)) {}
+};
+
+Utf8Path path_to_utf8(const std::filesystem::path& path);
 std::u16string path_to_utf16(const std::filesystem::path& path);
 std::filesystem::path to_path(const std::string_view source);
 std::filesystem::path to_path(const std::u16string_view source);

@@ -217,10 +217,12 @@ size_t DirectoryScanner::CountResultsWithTitleId(
 }
 
 void DirectoryScanner::Run(std::filesystem::path root) {
-  XELOGI("DirectoryScanner: scan start, root='{}'", xe::path_to_utf8(root));
+  XELOGI("DirectoryScanner: scan start, root='{}'",
+         xe::strip_pii(xe::path_to_utf8(root)));
   std::error_code ec;
   if (!std::filesystem::is_directory(root, ec) || ec) {
-    XELOGW("DirectoryScanner: not a directory: {} ({})", xe::path_to_utf8(root),
+    XELOGW("DirectoryScanner: not a directory: {} ({})",
+           xe::strip_pii(xe::path_to_utf8(root)),
            ec ? ec.message() : "is_directory=false");
     std::lock_guard<std::mutex> lock(mu_);
     progress_.done = true;
@@ -289,10 +291,10 @@ void DirectoryScanner::WorkerLoop() {
       ScanDirectory(dir);
     } catch (const std::exception& e) {
       XELOGE("DirectoryScanner: worker exception in '{}': {}",
-             xe::path_to_utf8(dir), e.what());
+             xe::strip_pii(xe::path_to_utf8(dir)), xe::strip_pii(e.what()));
     } catch (...) {
       XELOGE("DirectoryScanner: worker unknown exception in '{}'",
-             xe::path_to_utf8(dir));
+             xe::strip_pii(xe::path_to_utf8(dir)));
     }
 
     {
@@ -336,7 +338,7 @@ void DirectoryScanner::ScanDirectory(const std::filesystem::path& dir) {
     return;
   }
   SetCurrentDirectory(dir);
-  XELOGD("DirectoryScanner: enter '{}'", xe::path_to_utf8(dir));
+  XELOGD("DirectoryScanner: enter '{}'", xe::strip_pii(xe::path_to_utf8(dir)));
 
   std::vector<std::filesystem::path> files;
   std::vector<std::filesystem::path> subdirs;
@@ -346,8 +348,8 @@ void DirectoryScanner::ScanDirectory(const std::filesystem::path& dir) {
     auto opts = std::filesystem::directory_options::skip_permission_denied;
     auto it = std::filesystem::directory_iterator(dir, opts, ec);
     if (ec) {
-      XELOGW("DirectoryScanner: cannot open '{}': {}", xe::path_to_utf8(dir),
-             ec.message());
+      XELOGW("DirectoryScanner: cannot open '{}': {}",
+             xe::strip_pii(xe::path_to_utf8(dir)), ec.message());
       return;
     }
     auto end = std::filesystem::directory_iterator();
@@ -360,7 +362,7 @@ void DirectoryScanner::ScanDirectory(const std::filesystem::path& dir) {
       bool is_file = entry.is_regular_file(ftec);
       if (ftec) {
         XELOGW("DirectoryScanner: is_regular_file failed on '{}': {}",
-               xe::path_to_utf8(entry.path()), ftec.message());
+               xe::strip_pii(xe::path_to_utf8(entry.path())), ftec.message());
         ftec.clear();
         entries_skipped++;
       } else if (is_file) {
@@ -369,13 +371,13 @@ void DirectoryScanner::ScanDirectory(const std::filesystem::path& dir) {
         bool is_dir = entry.is_directory(ftec);
         if (ftec) {
           XELOGW("DirectoryScanner: is_directory failed on '{}': {}",
-                 xe::path_to_utf8(entry.path()), ftec.message());
+                 xe::strip_pii(xe::path_to_utf8(entry.path())), ftec.message());
           ftec.clear();
           entries_skipped++;
         } else if (is_dir) {
           if (IsGodDataDirectory(entry.path())) {
             XELOGD("DirectoryScanner:   skip god data dir '{}'",
-                   xe::path_to_utf8(entry.path()));
+                   xe::strip_pii(xe::path_to_utf8(entry.path())));
           } else {
             subdirs.push_back(entry.path());
           }
@@ -387,14 +389,15 @@ void DirectoryScanner::ScanDirectory(const std::filesystem::path& dir) {
       it.increment(ec);
       if (ec) {
         XELOGW("DirectoryScanner: increment failed in '{}': {}",
-               xe::path_to_utf8(dir), ec.message());
+               xe::strip_pii(xe::path_to_utf8(dir)), ec.message());
         ec.clear();
       }
     }
   }
 
   XELOGD("DirectoryScanner: '{}' contains {} files, {} subdirs ({} skipped)",
-         xe::path_to_utf8(dir), files.size(), subdirs.size(), entries_skipped);
+         xe::strip_pii(xe::path_to_utf8(dir)), files.size(), subdirs.size(),
+         entries_skipped);
 
   std::sort(files.begin(), files.end());
   std::sort(subdirs.begin(), subdirs.end());
@@ -416,14 +419,15 @@ void DirectoryScanner::ScanDirectory(const std::filesystem::path& dir) {
     if ((ext == ".xex" || ext == ".xbe") &&
         ToLowerAscii(xe::path_to_utf8(path.stem())) != "default") {
       XELOGD("DirectoryScanner:   skip non-default {} '{}'", ext,
-             xe::path_to_utf8(path));
+             xe::strip_pii(xe::path_to_utf8(path)));
       continue;
     }
     {
       std::lock_guard<std::mutex> lock(mu_);
       progress_.files_probed++;
     }
-    XELOGD("DirectoryScanner:   probe {} '{}'", ext, xe::path_to_utf8(path));
+    XELOGD("DirectoryScanner:   probe {} '{}'", ext,
+           xe::strip_pii(xe::path_to_utf8(path)));
     try {
       if (ext == ".xex") {
         if (auto m = vfs::ExtractXexMetadata(path)) {
@@ -473,10 +477,10 @@ void DirectoryScanner::ScanDirectory(const std::filesystem::path& dir) {
       }
     } catch (const std::exception& e) {
       XELOGW("DirectoryScanner: extractor threw on '{}': {}",
-             xe::path_to_utf8(path), e.what());
+             xe::strip_pii(xe::path_to_utf8(path)), xe::strip_pii(e.what()));
     } catch (...) {
       XELOGW("DirectoryScanner: extractor threw on '{}' (unknown)",
-             xe::path_to_utf8(path));
+             xe::strip_pii(xe::path_to_utf8(path)));
     }
   }
 
@@ -505,7 +509,8 @@ void DirectoryScanner::ScanDirectory(const std::filesystem::path& dir) {
               XELOGD(
                   "DirectoryScanner:   original Xbox stfs hit '{}' — "
                   "title_id={:08X}, name='{}'",
-                  xe::path_to_utf8(path), xbe->title_id, xbe->title_name);
+                  xe::strip_pii(xe::path_to_utf8(path)), xbe->title_id,
+                  xbe->title_name);
               DiscoveredGame g = MakeFromStfs(path, *m);
               ApplyXbe(g, *xbe);
               RecordGame(std::move(g));
@@ -517,26 +522,27 @@ void DirectoryScanner::ScanDirectory(const std::filesystem::path& dir) {
             XELOGD(
                 "DirectoryScanner:   stfs filtered '{}' — content_type="
                 "0x{:08X} ({}), name='{}'",
-                xe::path_to_utf8(path), m->content_type,
+                xe::strip_pii(xe::path_to_utf8(path)), m->content_type,
                 ResolveContentTypeName(m->content_type), m->display_name);
             continue;
           }
           XELOGD(
               "DirectoryScanner:   stfs hit '{}' — title_id={:08X}, "
               "content_type=0x{:08X}, name='{}'",
-              xe::path_to_utf8(path), m->title_id, m->content_type,
-              m->display_name);
+              xe::strip_pii(xe::path_to_utf8(path)), m->title_id,
+              m->content_type, m->display_name);
           RecordGame(MakeFromStfs(path, *m));
           phase2_hits++;
         } else {
-          XELOGD("DirectoryScanner:   stfs miss '{}'", xe::path_to_utf8(path));
+          XELOGD("DirectoryScanner:   stfs miss '{}'",
+                 xe::strip_pii(xe::path_to_utf8(path)));
         }
       } catch (const std::exception& e) {
         XELOGW("DirectoryScanner: stfs probe threw on '{}': {}",
-               xe::path_to_utf8(path), e.what());
+               xe::strip_pii(xe::path_to_utf8(path)), xe::strip_pii(e.what()));
       } catch (...) {
         XELOGW("DirectoryScanner: stfs probe threw on '{}' (unknown)",
-               xe::path_to_utf8(path));
+               xe::strip_pii(xe::path_to_utf8(path)));
       }
     }
   }
@@ -544,8 +550,8 @@ void DirectoryScanner::ScanDirectory(const std::filesystem::path& dir) {
   XELOGD(
       "DirectoryScanner: leave '{}' — found_xex={}, phase1_hits={}, "
       "phase2_probed={}, phase2_hits={}, recurse={}",
-      xe::path_to_utf8(dir), found_xex, phase1_hits, phase2_probed, phase2_hits,
-      !found_xex);
+      xe::strip_pii(xe::path_to_utf8(dir)), found_xex, phase1_hits,
+      phase2_probed, phase2_hits, !found_xex);
 
   // Phase 3: recurse only when no XEX found in this directory.
   if (!found_xex && !cancel_requested_.load()) {

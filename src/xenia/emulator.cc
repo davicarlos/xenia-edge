@@ -706,7 +706,8 @@ Emulator::FileSignatureType Emulator::GetFileSignature(
     return FileSignatureType::XISO;
   }
 
-  XELOGE("{}: {} ({:08X})", __func__, path.extension(), magic_value);
+  XELOGE("{}: {} ({:08X})", __func__,
+         xe::strip_pii(xe::path_to_utf8(path.extension())), magic_value);
   return FileSignatureType::Unknown;
 }
 
@@ -885,7 +886,7 @@ X_STATUS Emulator::LaunchXboxOriginal(const std::filesystem::path& path,
   const std::filesystem::path launcher = xefu_path() / cvars::xefu_launcher;
   if (!std::filesystem::is_regular_file(launcher)) {
     XELOGE("Original Xbox games run through XeFu, which needs {} in {}",
-           cvars::xefu_launcher, xe::path_to_utf8(xefu_path()));
+           cvars::xefu_launcher, xe::strip_pii(xe::path_to_utf8(xefu_path())));
     // Somewhere for the user to copy XeFu to.
     std::error_code create_error;
     std::filesystem::create_directories(xefu_path(), create_error);
@@ -1016,8 +1017,9 @@ uint32_t Emulator::DataMigration(const uint64_t xuid) {
       if (ec) {
         failure_count++;
         XELOGW("{}: Moving from: {} to: {} failed! Error message: {} ({:08X})",
-               __func__, previous_path, path / content_type.name, ec.message(),
-               ec.value());
+               __func__, xe::strip_pii(xe::path_to_utf8(previous_path)),
+               xe::strip_pii(xe::path_to_utf8(path / content_type.name)),
+               ec.message(), ec.value());
       }
     }
     // Other directories:
@@ -1042,7 +1044,8 @@ uint32_t Emulator::DataMigration(const uint64_t xuid) {
           failure_count++;
           XELOGW(
               "{}: Copying from: {} to: {} failed! Error message: {} ({:08X})",
-              func, headers_path, path, ec.message(), ec.value());
+              func, xe::strip_pii(xe::path_to_utf8(headers_path)),
+              xe::strip_pii(xe::path_to_utf8(path)), ec.message(), ec.value());
           return false;
         }
         return true;
@@ -1094,9 +1097,11 @@ uint32_t Emulator::DataMigration(const uint64_t xuid) {
       std::filesystem::rename(path_from, path_to_profile_data / title.name, ec);
       if (ec) {
         failure_count++;
-        XELOGW("{}: Moving from: {} to: {} failed! Error message: {} ({:08X})",
-               __func__, path_from, path_to_profile_data / title.name,
-               ec.message(), ec.value());
+        XELOGW(
+            "{}: Moving from: {} to: {} failed! Error message: {} ({:08X})",
+            __func__, xe::strip_pii(xe::path_to_utf8(path_from)),
+            xe::strip_pii(xe::path_to_utf8(path_to_profile_data / title.name)),
+            ec.message(), ec.value());
       } else {
         std::error_code ec;
         std::filesystem::remove_all(title.path / title.name / "profile", ec);
@@ -1119,7 +1124,7 @@ X_STATUS Emulator::ProcessContentPackageHeader(
     const std::filesystem::path& path, ContentInstallEntry& installation_info) {
   installation_info.name_ = "Invalid Content Package!";
   installation_info.content_type_ = XContentType::kInvalid;
-  installation_info.data_installation_path_ = xe::path_to_utf8(path.filename());
+  installation_info.data_installation_path_ = path.filename();
 
   const auto header = vfs::XContentContainerDevice::ReadContainerHeader(path);
 
@@ -1488,12 +1493,12 @@ void Emulator::RelaunchTitle(const std::string& host_path,
   std::lock_guard<std::recursive_mutex> launch_lock(launch_mutex_);
   if (request != relaunch_requests_.load()) {
     XELOGI("RelaunchTitle: skipping {}, a newer request replaces it",
-           host_path);
+           xe::strip_pii(host_path));
     return;
   }
   XELOGI(
       "RelaunchTitle: starting full in-process relaunch, target={}, module={}",
-      host_path, launch_module);
+      xe::strip_pii(host_path), launch_module);
 
   // Tell WaitUntilExit not to fire on_exit when main thread dies.
   relaunching_ = true;
@@ -1576,10 +1581,11 @@ void Emulator::RelaunchTitle(const std::string& host_path,
   // launch rather than loader_data-driven).
   auto launch_target =
       host_path.empty() ? last_launch_path_ : xe::to_path(host_path);
-  XELOGI("RelaunchTitle: launching '{}'", xe::path_to_utf8(launch_target));
+  XELOGI("RelaunchTitle: launching '{}'",
+         xe::strip_pii(xe::path_to_utf8(launch_target)));
   if (const X_STATUS result = LaunchPath(launch_target); XFAILED(result)) {
     XELOGE("RelaunchTitle: launching '{}' failed: {:08X}",
-           xe::path_to_utf8(launch_target), result);
+           xe::strip_pii(xe::path_to_utf8(launch_target)), result);
     fail();
     return;
   }
@@ -1759,7 +1765,7 @@ const std::filesystem::path Emulator::GetNewDiscPath(
         if (std::filesystem::exists(game_path)) {
           initial_dir = game_path.parent_path();
           XELOGI("Setting file picker initial directory to game directory: {}",
-                 xe::path_to_utf8(initial_dir));
+                 xe::strip_pii(xe::path_to_utf8(initial_dir)));
         }
       }
     }
@@ -1803,7 +1809,7 @@ const std::filesystem::path Emulator::GetNewDiscPath(
     if (result == kernel::xam::ui::DiscSwapResult::kSelected) {
       path = selected_path;
       XELOGI("GetNewDiscPath: Selected disc from saved paths: {}",
-             xe::path_to_utf8(path));
+             xe::strip_pii(xe::path_to_utf8(path)));
       return path;
     } else if (result == kernel::xam::ui::DiscSwapResult::kBrowse) {
       use_file_picker = true;
@@ -2232,6 +2238,10 @@ X_STATUS Emulator::PrepareLaunch(const std::filesystem::path& path,
   // translated yet, which is the only window where this can be picked up.
   processor_->RefreshTraceCountsEnabled();
 
+  if (input_system_) {
+    input_system_->ResetKeystrokes();
+  }
+
   // Expose the HDD content partition. Games that resolve saves/DLC to a raw
   // \Device\Harddisk0\Partition1\Content path via XamContentResolve open it
   // directly, not through the save:/dlc: symlinks. Without this the open lands
@@ -2263,25 +2273,29 @@ X_STATUS Emulator::PrepareLaunch(const std::filesystem::path& path,
   XELOGI("Loading module {}", module_path);
   auto module = kernel_state_->LoadUserModule(module_path);
   if (!module) {
-    XELOGE("Failed to load user module {}", path);
+    XELOGE("Failed to load user module {}",
+           xe::strip_pii(xe::path_to_utf8(path)));
     return X_STATUS_NOT_FOUND;
   }
 
   if (!module->is_executable()) {
     kernel_state_->UnloadUserModule(module, false);
-    XELOGE("Failed to load user module {}", path);
+    XELOGE("Failed to load user module {}",
+           xe::strip_pii(xe::path_to_utf8(path)));
     return X_STATUS_NOT_SUPPORTED;
   }
 
   X_RESULT result = kernel_state_->ApplyTitleUpdate(module);
   if (XFAILED(result)) {
-    XELOGE("Failed to apply title update! Cannot run module {}", path);
+    XELOGE("Failed to apply title update! Cannot run module {}",
+           xe::strip_pii(xe::path_to_utf8(path)));
     return result;
   }
 
   result = kernel_state_->FinishLoadingUserModule(module);
   if (XFAILED(result)) {
-    XELOGE("Failed to initialize user module {}", path);
+    XELOGE("Failed to initialize user module {}",
+           xe::strip_pii(xe::path_to_utf8(path)));
     return result;
   }
   // A XeFu build calls into the modules it imports from without checking they
@@ -2290,7 +2304,7 @@ X_STATUS Emulator::PrepareLaunch(const std::filesystem::path& path,
     const auto& missing = module->xex_module()->missing_import_libraries();
     if (!missing.empty()) {
       XELOGE("XeFu needs {} in {}", missing.front(),
-             xe::path_to_utf8(path.parent_path()));
+             xe::strip_pii(xe::path_to_utf8(path.parent_path())));
       ReportMissingXeFuFile(missing.front());
       return X_STATUS_DLL_NOT_FOUND;
     }

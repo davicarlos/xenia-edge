@@ -132,7 +132,7 @@ bool HostPathEntry::DeleteEntryInternal(Entry* entry) {
       const auto result = std::filesystem::remove(full_path, ec);
       if (ec) {
         XELOGE("{}: Cannot remove file entry. File: {} Error: {}", __func__,
-               full_path, ec.message());
+               xe::strip_pii(xe::path_to_utf8(full_path)), ec.message());
         return false;
       }
     }
@@ -149,8 +149,8 @@ bool HostPathEntry::RenameEntryInternal(Entry* new_parent,
   std::filesystem::rename(host_path_, new_host_path, ec);
   if (ec) {
     XELOGE("RenameEntryInternal: Failed to rename '{}' to '{}': {}",
-           xe::path_to_utf8(host_path_), xe::path_to_utf8(new_host_path),
-           ec.message());
+           xe::strip_pii(xe::path_to_utf8(host_path_)),
+           xe::strip_pii(xe::path_to_utf8(new_host_path)), ec.message());
     return false;
   }
   host_path_ = new_host_path;

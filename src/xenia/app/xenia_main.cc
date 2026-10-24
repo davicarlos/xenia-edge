@@ -548,7 +548,7 @@ bool EmulatorApp::OnInitialize() {
     }
   }
   storage_root = std::filesystem::absolute(storage_root);
-  XELOGI("Storage root: {}", storage_root);
+  XELOGI("Storage root: {}", xe::strip_pii(xe::path_to_utf8(storage_root)));
 
   config::SetupConfig(storage_root);
 
@@ -596,7 +596,7 @@ bool EmulatorApp::OnInitialize() {
     }
   }
   content_root = std::filesystem::absolute(content_root);
-  XELOGI("Content root: {}", content_root);
+  XELOGI("Content root: {}", xe::strip_pii(xe::path_to_utf8(content_root)));
 
   std::filesystem::path cache_root = cvars::cache_root;
   if (cache_root.empty()) {
@@ -611,7 +611,7 @@ bool EmulatorApp::OnInitialize() {
     }
   }
   cache_root = std::filesystem::absolute(cache_root);
-  XELOGI("Host cache root: {}", cache_root);
+  XELOGI("Host cache root: {}", xe::strip_pii(xe::path_to_utf8(cache_root)));
 
   // Create the emulator but don't initialize so we can setup the window.
   emulator_ =

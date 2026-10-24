@@ -531,26 +531,28 @@ FileMappingHandle CreateFileMappingHandle(const std::filesystem::path& path,
     }
     if (memfd >= 0) {
       if (ftruncate(memfd, length) < 0) {
-        XELOGE("ftruncate(memfd {}, 0x{:X}) failed: {} ({})", path.string(),
-               length, strerror(errno), errno);
+        XELOGE("ftruncate(memfd {}, 0x{:X}) failed: {} ({})",
+               xe::strip_pii(xe::path_to_utf8(path)), length, strerror(errno),
+               errno);
         close(memfd);
         return kFileMappingHandleInvalid;
       }
       return memfd;
     }
     XELOGW("memfd_create({}) failed: {} ({}), falling back to shm_open",
-           path.string(), strerror(errno), errno);
+           xe::strip_pii(xe::path_to_utf8(path)), strerror(errno), errno);
   }
 #endif  // XE_PLATFORM_GNU_LINUX
   int ret = shm_open(full_path.c_str(), oflag, 0600);
   if (ret < 0) {
-    XELOGE("shm_open({}) failed: {} ({})", full_path.string(), strerror(errno),
-           errno);
+    XELOGE("shm_open({}) failed: {} ({})",
+           xe::strip_pii(xe::path_to_utf8(full_path)), strerror(errno), errno);
     return kFileMappingHandleInvalid;
   }
   if (ftruncate(ret, length) < 0) {
-    XELOGE("ftruncate({}, 0x{:X}) failed: {} ({})", full_path.string(), length,
-           strerror(errno), errno);
+    XELOGE("ftruncate({}, 0x{:X}) failed: {} ({})",
+           xe::strip_pii(xe::path_to_utf8(full_path)), length, strerror(errno),
+           errno);
     close(ret);
     shm_unlink(full_path.c_str());
     return kFileMappingHandleInvalid;

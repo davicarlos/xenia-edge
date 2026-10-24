@@ -1196,7 +1196,8 @@ void CommandProcessor::WriteTraceFrameScreenshot() {
 
   auto file = std::ofstream(png_path, std::ios::binary);
   if (!file.is_open()) {
-    XELOGE("Failed to open {} for the traced frame screenshot", png_path);
+    XELOGE("Failed to open {} for the traced frame screenshot",
+           xe::strip_pii(xe::path_to_utf8(png_path)));
     return;
   }
   if (!stbi_write_png_to_func(
@@ -1206,10 +1207,12 @@ void CommandProcessor::WriteTraceFrameScreenshot() {
           },
           &file, int(image.width), int(image.height), 4, image.data.data(),
           int(image.stride))) {
-    XELOGE("Failed to write the traced frame screenshot to {}", png_path);
+    XELOGE("Failed to write the traced frame screenshot to {}",
+           xe::strip_pii(xe::path_to_utf8(png_path)));
     return;
   }
-  XELOGI("Traced frame screenshot written to {}", png_path);
+  XELOGI("Traced frame screenshot written to {}",
+         xe::strip_pii(xe::path_to_utf8(png_path)));
 }
 
 void CommandProcessor::InitializeTrace() {

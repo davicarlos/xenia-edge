@@ -219,6 +219,10 @@ void InputSystem::RemoveUIInputBlocker() {
     }
   }
 
+  // Discard before unblocking so no title gets keystrokes made in the UI.
+  for (auto& driver : drivers_) {
+    driver->DiscardKeystrokes();
+  }
   if (ui_input_blockers_.fetch_sub(1) == 1) {
     ui_input_blocking_edges_.fetch_add(1);
   }
@@ -247,6 +251,9 @@ X_RESULT InputSystem::GetKeystroke(uint32_t user_index, uint32_t flags,
   // stay empty, as xam reports them. Never success, since a title draining
   // keystrokes until EMPTY would spin forever.
   if (ui_active || IsUIInputBlocked()) {
+    for (auto& driver : drivers_) {
+      driver->DiscardKeystrokes();
+    }
     std::memset(out_keystroke, 0, sizeof(X_INPUT_KEYSTROKE));
     X_INPUT_STATE state;
     // Keyboard drivers feed every slot, like below.

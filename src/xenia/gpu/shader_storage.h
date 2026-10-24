@@ -101,7 +101,7 @@ inline bool EnsureShaderStorageDirectoriesExist(
       XELOGE(
           "Failed to create shader storage directory, persistent shader "
           "storage will be disabled: {}",
-          xe::path_to_utf8(shareable_root));
+          xe::strip_pii(xe::path_to_utf8(shareable_root)));
       return false;
     }
   }
@@ -242,7 +242,7 @@ class ShaderStorageWriter {
       XELOGE(
           "Failed to open the pipeline storage file for writing, persistent "
           "shader storage will be disabled: {}",
-          xe::path_to_utf8(pipeline_storage_file_path));
+          xe::strip_pii(xe::path_to_utf8(pipeline_storage_file_path)));
       return false;
     }
     // "a+" leaves the read position at end of file on the BSDs, macOS included.
@@ -318,7 +318,7 @@ class ShaderStorageWriter {
       XELOGE(
           "Failed to open the guest shader storage file for writing, "
           "persistent shader storage will be disabled: {}",
-          xe::path_to_utf8(shader_storage_file_path));
+          xe::strip_pii(xe::path_to_utf8(shader_storage_file_path)));
       fclose(pipeline_storage_file_);
       pipeline_storage_file_ = nullptr;
       return false;

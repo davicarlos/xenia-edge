@@ -25,6 +25,7 @@
 #include <wx/image.h>
 #include <wx/menu.h>
 #include <wx/msgdlg.h>
+#include <wx/settings.h>
 #include <wx/sizer.h>
 #include <wx/splitter.h>
 #include <wx/stattext.h>
@@ -144,7 +145,10 @@ GameListPanel::GameListPanel(wxWindow* parent, EmulatorWindow* emulator_window)
   grid_ = new ui::GameGrid(list_side_, icon_size_px_);
   grid_->SetPlaceholder(not_played_placeholder_);
   grid_->SetMinSize(wxSize(0, 0));
-  grid_->SetSelectionChangedCallback([this]() { OnSelectionChanged(); });
+  grid_->SetSelectionChangedCallback(
+      [this](bool clicked) { OnSelectionChanged(clicked); });
+  pane_open_timer_.Bind(wxEVT_TIMER,
+                        [this](wxTimerEvent&) { RefreshInfoPane(); });
   grid_->SetActivatedCallback([this](int index) { OnItemActivated(index); });
   grid_->SetContextMenuCallback(
       [this](int index, const wxPoint&) { OnItemContextMenu(index); });
@@ -556,12 +560,15 @@ void GameListPanel::OnItemActivated(int index) {
   LaunchOrPrompt(entries_[idx].key(), entries_[idx].path);
 }
 
-void GameListPanel::OnSelectionChanged() {
+void GameListPanel::OnSelectionChanged(bool clicked) {
   info_pane_closed_ = false;
-  RefreshInfoPane();
-  if (selection_changed_cb_) {
-    selection_changed_cb_();
+  // Opening the pane reflows the grid. After a click it waits out the double
+  // click time so the second click lands on the same card.
+  if (clicked && !splitter_->IsSplit()) {
+    pane_open_timer_.StartOnce(wxSystemSettings::GetMetric(wxSYS_DCLICK_MSEC));
+    return;
   }
+  RefreshInfoPane();
 }
 
 CompatState GameListPanel::GetEntryCompatState(const Entry& e) const {

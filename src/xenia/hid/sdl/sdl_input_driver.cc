@@ -256,15 +256,17 @@ void SDLInputDriver::LoadGameControllerDB() {
 
   if (!std::filesystem::exists(cvars::mappings_file)) {
     XELOGW("SDL GameControllerDB: file '{}' does not exist.",
-           cvars::mappings_file);
+           xe::strip_pii(xe::path_to_utf8(cvars::mappings_file)));
     return;
   }
 
-  XELOGI("SDL GameControllerDB: Loading {}", cvars::mappings_file);
+  XELOGI("SDL GameControllerDB: Loading {}",
+         xe::strip_pii(xe::path_to_utf8(cvars::mappings_file)));
   // ifstream for Unicode-safe paths.
   std::ifstream stream(cvars::mappings_file, std::ios::binary);
   if (!stream) {
-    XELOGW("SDL GameControllerDB: could not open '{}'.", cvars::mappings_file);
+    XELOGW("SDL GameControllerDB: could not open '{}'.",
+           xe::strip_pii(xe::path_to_utf8(cvars::mappings_file)));
     return;
   }
   std::ostringstream ss;

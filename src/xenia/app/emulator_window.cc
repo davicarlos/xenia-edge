@@ -854,8 +854,8 @@ void EmulatorWindow::OnEmulatorInitialized() {
         XELOGI(
             "Launching new title: host_path={}, launch_module={}, flags={}, "
             "data_len={}, xbox_disc={}",
-            host_path, launch_module, launch_flags, launch_data.length(),
-            xbox_disc);
+            xe::strip_pii(host_path), launch_module, launch_flags,
+            launch_data.length(), xe::strip_pii(xbox_disc));
 
         std::vector<std::string> args;
         // Preserve return_to_ui through the title-to-title chain
@@ -1343,8 +1343,6 @@ bool EmulatorWindow::Initialize() {
       game_list_panel_ = new GameListPanel(frame, this);
       game_list_panel_->SetLaunchCallback(
           [this](const std::filesystem::path& path) { RunTitle(path); });
-      game_list_panel_->SetSelectionChangedCallback(
-          [this]() { ApplyContentVisibility(); });
       aui->AddPane(game_list_panel_,
                    wxAuiPaneInfo().Name("game_list").CenterPane());
       aui->Update();
@@ -1500,6 +1498,15 @@ void EmulatorWindow::OnKeyDown(ui::KeyEvent& e) {
     return;
   }
 
+  // A held hotkey acts once and its repeats are swallowed with it.
+  if (e.prev_state()) {
+    if (hotkeys_down_.count(e.virtual_key())) {
+      e.set_handled(true);
+    }
+    return;
+  }
+  hotkeys_down_.erase(e.virtual_key());
+
   switch (e.virtual_key()) {
     case ui::VirtualKey::kO: {
       if (!e.is_ctrl_pressed() || emulator_->is_title_open()) {
@@ -1545,6 +1552,16 @@ void EmulatorWindow::OnKeyDown(ui::KeyEvent& e) {
     } break;
 
     case ui::VirtualKey::kEscape: {
+      // In game Esc toggles the context menu, which offers leaving fullscreen.
+      // Other open dialogs keep Esc to cancel.
+      if (emulator_->is_title_open()) {
+        if (!context_menu_ && imgui_drawer() &&
+            imgui_drawer()->HasOpenDialogs()) {
+          return;
+        }
+        ToggleContextMenu(false);
+        break;
+      }
       // Allow users to escape fullscreen (but not enter it).
       if (!window_->IsFullscreen()) {
         return;
@@ -1563,6 +1580,7 @@ void EmulatorWindow::OnKeyDown(ui::KeyEvent& e) {
       return;
   }
 
+  hotkeys_down_.insert(e.virtual_key());
   e.set_handled(true);
 }
 
@@ -1738,7 +1756,8 @@ void EmulatorWindow::SaveImage(const std::filesystem::path& filepath,
                                const xe::ui::RawImage& image) {
   auto file = std::ofstream(filepath, std::ios::binary);
   if (!file.is_open()) {
-    XELOGE("Failed to open file for writing: {}", filepath);
+    XELOGE("Failed to open file for writing: {}",
+           xe::strip_pii(xe::path_to_utf8(filepath)));
     return;
   }
 
@@ -1750,7 +1769,8 @@ void EmulatorWindow::SaveImage(const std::filesystem::path& filepath,
       &file, image.width, image.height, 4, image.data.data(),
       (int)image.stride);
   if (result == 0) {
-    XELOGE("Failed to write PNG to file: {}", filepath);
+    XELOGE("Failed to write PNG to file: {}",
+           xe::strip_pii(xe::path_to_utf8(filepath)));
     return;
   }
 }
@@ -3427,7 +3447,7 @@ void EmulatorWindow::LaunchTitleInNewProcess(
   // Verify the file exists
   if (!path_to_file.empty() && !std::filesystem::exists(path_to_file)) {
     XELOGE("Cannot launch title - file not found: {}",
-           xe::path_to_utf8(path_to_file));
+           xe::strip_pii(xe::path_to_utf8(path_to_file)));
     return;
   }
 
@@ -3437,7 +3457,8 @@ void EmulatorWindow::LaunchTitleInNewProcess(
     return;
   }
 
-  XELOGI("Launched title in new process: {}", xe::path_to_utf8(path_to_file));
+  XELOGI("Launched title in new process: {}",
+         xe::strip_pii(xe::path_to_utf8(path_to_file)));
 
   // Exit UI process - game process will spawn new UI when it exits
   xe::FlushLog();

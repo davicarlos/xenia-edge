@@ -619,7 +619,8 @@ bool EnsureShaderCompilerRuntime(const std::filesystem::path& d3d12_dir) {
     return false;
   }
 
-  XELOGI("DXIL validator installed to {}", xe::path_to_utf8(d3d12_dir));
+  XELOGI("DXIL validator installed to {}",
+         xe::strip_pii(xe::path_to_utf8(d3d12_dir)));
   return true;
 }
 
@@ -661,7 +662,7 @@ bool EnsureAgilityRuntime(const std::filesystem::path& d3d12_dir) {
   }
 
   XELOGI("DirectX 12 Agility SDK runtime installed to {}; restarting",
-         xe::path_to_utf8(d3d12_dir));
+         xe::strip_pii(xe::path_to_utf8(d3d12_dir)));
   RelaunchAndExit();
   // Only reached if the relaunch couldn't be started.
   ShowError(
@@ -708,7 +709,7 @@ bool EnsureDebugLayer(const std::filesystem::path& d3d12_dir) {
   }
 
   XELOGI("DirectX 12 debug layer installed to {}; restarting",
-         xe::path_to_utf8(d3d12_dir));
+         xe::strip_pii(xe::path_to_utf8(d3d12_dir)));
   RelaunchAndExit();
   // Only reached if the relaunch couldn't be started.
   ShowError(
@@ -753,7 +754,8 @@ bool EnsureVulkanLoader(const std::filesystem::path& vulkan_dir) {
     return false;
   }
 
-  XELOGI("Vulkan loader installed to {}", xe::path_to_utf8(vulkan_dir));
+  XELOGI("Vulkan loader installed to {}",
+         xe::strip_pii(xe::path_to_utf8(vulkan_dir)));
   return true;
 }
 #endif

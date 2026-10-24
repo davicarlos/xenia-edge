@@ -219,15 +219,15 @@ bool GameLibrary::ReadEntry(const std::filesystem::path& game_toml,
   try {
     tbl = toml::parse_file(xe::path_to_utf8(game_toml));
   } catch (const toml::parse_error& e) {
-    XELOGE("GameLibrary: failed to parse {}: {}", xe::path_to_utf8(game_toml),
-           e.description());
+    XELOGE("GameLibrary: failed to parse {}: {}",
+           xe::strip_pii(xe::path_to_utf8(game_toml)), e.description());
     return false;
   }
 
   auto title_id_str = tbl["title_id"].value<std::string>();
   if (!title_id_str) {
     XELOGW("GameLibrary: missing title_id, skipping {}",
-           xe::path_to_utf8(game_toml));
+           xe::strip_pii(xe::path_to_utf8(game_toml)));
     return false;
   }
   entry.title_id = xe::string_util::from_string<uint32_t>(*title_id_str, true);
@@ -527,8 +527,8 @@ bool GameLibrary::WriteEntryAtomic(const LibraryEntry& entry,
   std::error_code ec;
   std::filesystem::create_directories(dir, ec);
   if (ec) {
-    XELOGE("GameLibrary: cannot create {}: {}", xe::path_to_utf8(dir),
-           ec.message());
+    XELOGE("GameLibrary: cannot create {}: {}",
+           xe::strip_pii(xe::path_to_utf8(dir)), ec.message());
     return false;
   }
 
@@ -563,20 +563,22 @@ bool GameLibrary::WriteEntryAtomic(const LibraryEntry& entry,
   {
     std::ofstream file(tmp_path, std::ios::binary | std::ios::trunc);
     if (!file) {
-      XELOGE("GameLibrary: cannot open {}", xe::path_to_utf8(tmp_path));
+      XELOGE("GameLibrary: cannot open {}",
+             xe::strip_pii(xe::path_to_utf8(tmp_path)));
       return false;
     }
     file << tbl << "\n";
     if (!file) {
-      XELOGE("GameLibrary: write failed for {}", xe::path_to_utf8(tmp_path));
+      XELOGE("GameLibrary: write failed for {}",
+             xe::strip_pii(xe::path_to_utf8(tmp_path)));
       return false;
     }
   }
 
   std::filesystem::rename(tmp_path, final_path, ec);
   if (ec) {
-    XELOGE("GameLibrary: cannot replace {}: {}", xe::path_to_utf8(final_path),
-           ec.message());
+    XELOGE("GameLibrary: cannot replace {}: {}",
+           xe::strip_pii(xe::path_to_utf8(final_path)), ec.message());
     std::filesystem::remove(tmp_path, ec);
     return false;
   }
@@ -727,8 +729,8 @@ bool GameLibrary::SetIcon(const LibraryKey& key, std::span<const uint8_t> png) {
   std::error_code ec;
   std::filesystem::create_directories(dir, ec);
   if (ec) {
-    XELOGE("GameLibrary: cannot create {}: {}", xe::path_to_utf8(dir),
-           ec.message());
+    XELOGE("GameLibrary: cannot create {}: {}",
+           xe::strip_pii(xe::path_to_utf8(dir)), ec.message());
     return false;
   }
 
@@ -737,20 +739,22 @@ bool GameLibrary::SetIcon(const LibraryKey& key, std::span<const uint8_t> png) {
   {
     std::ofstream file(tmp_path, std::ios::binary | std::ios::trunc);
     if (!file) {
-      XELOGE("GameLibrary: cannot open {}", xe::path_to_utf8(tmp_path));
+      XELOGE("GameLibrary: cannot open {}",
+             xe::strip_pii(xe::path_to_utf8(tmp_path)));
       return false;
     }
     file.write(reinterpret_cast<const char*>(png.data()), png.size());
     if (!file) {
-      XELOGE("GameLibrary: write failed for {}", xe::path_to_utf8(tmp_path));
+      XELOGE("GameLibrary: write failed for {}",
+             xe::strip_pii(xe::path_to_utf8(tmp_path)));
       return false;
     }
   }
 
   std::filesystem::rename(tmp_path, final_path, ec);
   if (ec) {
-    XELOGE("GameLibrary: cannot replace {}: {}", xe::path_to_utf8(final_path),
-           ec.message());
+    XELOGE("GameLibrary: cannot replace {}: {}",
+           xe::strip_pii(xe::path_to_utf8(final_path)), ec.message());
     std::filesystem::remove(tmp_path, ec);
     return false;
   }

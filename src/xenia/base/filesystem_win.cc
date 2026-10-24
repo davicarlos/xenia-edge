@@ -21,8 +21,8 @@
 
 namespace xe {
 
-std::string path_to_utf8(const std::filesystem::path& path) {
-  return xe::to_utf8(path.u16string());
+Utf8Path path_to_utf8(const std::filesystem::path& path) {
+  return Utf8Path(xe::to_utf8(path.u16string()));
 }
 
 std::u16string path_to_utf16(const std::filesystem::path& path) {

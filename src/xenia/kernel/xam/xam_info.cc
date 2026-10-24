@@ -582,7 +582,7 @@ static void LaunchTitle(std::string path, std::string_view d_drive_path,
     std::string launch_path = xe::path_to_utf8(path);
 
     XELOGI("XamLoaderLaunchTitle: original host_path={}, launch_path={}",
-           loader_data.host_path, launch_path);
+           xe::strip_pii(loader_data.host_path), launch_path);
 
     // Remove common guest path prefixes (case-insensitive since Xbox
     // paths are case-insensitive, games may pass e.g. "GAME:\")
@@ -614,7 +614,7 @@ static void LaunchTitle(std::string path, std::string_view d_drive_path,
     }
 
     XELOGI("XamLoaderLaunchTitle: normalized host_path={}, launch_path={}",
-           xe::path_to_utf8(host_path), launch_path);
+           xe::strip_pii(xe::path_to_utf8(host_path)), launch_path);
 
     // Handle title launch in-process via full Shutdown/Setup cycle. Disabled
     // on macOS — pthread_cancel there doesn't run C++ destructors, so
@@ -625,7 +625,7 @@ static void LaunchTitle(std::string path, std::string_view d_drive_path,
       auto emulator = kernel_state()->emulator();
 
       XELOGI("XamLoaderLaunchTitle: in-process relaunch to '{}'",
-             xe::path_to_utf8(host_path));
+             xe::strip_pii(xe::path_to_utf8(host_path)));
 
       auto new_host_path = xe::path_to_utf8(host_path);
       auto new_launch_module = launch_path;

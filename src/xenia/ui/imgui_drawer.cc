@@ -261,6 +261,7 @@ std::optional<ImGuiKey> ImGuiDrawer::VirtualKeyToImGuiKey(VirtualKey vkey) {
       {ui::VirtualKey::kEnd, ImGuiKey_End},
       {ui::VirtualKey::kDelete, ImGuiKey_Delete},
       {ui::VirtualKey::kBack, ImGuiKey_Backspace},
+      {ui::VirtualKey::kSpace, ImGuiKey_Space},
       {ui::VirtualKey::kReturn, ImGuiKey_Enter},
       {ui::VirtualKey::kEscape, ImGuiKey_Escape},
       {ui::VirtualKey::kA, ImGuiKey_A},
@@ -425,7 +426,8 @@ bool ImGuiDrawer::LoadWindowsFont(ImGuiIO& io, ImFontConfig& font_config,
   io.Fonts->Build();
   // Something went wrong while loading custom font. Probably corrupted.
   if (!font->IsLoaded()) {
-    XELOGE("Failed to load custom font: {}", font_path);
+    XELOGE("Failed to load custom font: {}",
+           xe::strip_pii(xe::path_to_utf8(font_path)));
     io.Fonts->Clear();
   }
   CoTaskMemFree(static_cast<void*>(fonts_dir));
@@ -856,7 +858,14 @@ ImGuiIO& ImGuiDrawer::GetIO() {
   return ImGui::GetIO();
 }
 
-void ImGuiDrawer::OnKeyDown(KeyEvent& e) { OnKey(e, true); }
+void ImGuiDrawer::OnKeyDown(KeyEvent& e) {
+  OnKey(e, true);
+  // Text typed into a field stays away from the game's keyboard input.
+  // Releases still pass since the key may have gone down before the field.
+  if (GetIO().WantTextInput) {
+    e.set_handled(true);
+  }
+}
 
 void ImGuiDrawer::OnKeyUp(KeyEvent& e) { OnKey(e, false); }
 
@@ -983,6 +992,7 @@ void ImGuiDrawer::ClearInput() {
   io.MousePos = ImVec2(-FLT_MAX, -FLT_MAX);
   std::memset(io.MouseDown, 0, sizeof(io.MouseDown));
   io.ClearInputKeys();
+  keys_down_.clear();
   touch_pointer_id_ = TouchEvent::kPointerIDNone;
   reset_mouse_position_after_next_frame_ = false;
 }
@@ -991,7 +1001,14 @@ void ImGuiDrawer::OnKey(KeyEvent& e, bool is_down) {
   auto& io = GetIO();
   const VirtualKey virtual_key = e.virtual_key();
   if (auto imGuiKey = VirtualKeyToImGuiKey(virtual_key); imGuiKey) {
-    io.AddKeyEvent(*imGuiKey, is_down);
+    // Repeats of a key held since before the drawer attached aren't presses.
+    if (!is_down) {
+      keys_down_.erase(virtual_key);
+      io.AddKeyEvent(*imGuiKey, false);
+    } else if (!e.prev_state() || keys_down_.count(virtual_key)) {
+      keys_down_.insert(virtual_key);
+      io.AddKeyEvent(*imGuiKey, true);
+    }
   }
   switch (virtual_key) {
     case VirtualKey::kShift:

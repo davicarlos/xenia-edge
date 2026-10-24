@@ -38,7 +38,7 @@ SvodContainerDevice::Result SvodContainerDevice::LoadHostFiles() {
   data_fragment_path += ".data";
   if (!std::filesystem::exists(data_fragment_path)) {
     XELOGE("STFS container is multi-file, but path {} does not exist.",
-           data_fragment_path);
+           xe::strip_pii(xe::path_to_utf8(data_fragment_path)));
     return Result::kFileMismatch;
   }
 
@@ -56,14 +56,16 @@ SvodContainerDevice::Result SvodContainerDevice::LoadHostFiles() {
     // A handle opens on a directory too, so reject one here rather than let it
     // sit in the map and fail every read routed to its fragment index.
     if (fragment.type != xe::filesystem::FileInfo::Type::kFile) {
-      XELOGE("SVOD data fragment {} is not a file.", fragment.name);
+      XELOGE("SVOD data fragment {} is not a file.",
+             xe::strip_pii(xe::path_to_utf8(fragment.name)));
       return Result::kFileMismatch;
     }
     auto path = fragment.path / fragment.name;
     auto file = xe::filesystem::FileHandle::OpenExisting(
         path, xe::filesystem::FileAccess::kGenericRead);
     if (!file) {
-      XELOGI("Failed to map SVOD file {}.", path);
+      XELOGI("Failed to map SVOD file {}.",
+             xe::strip_pii(xe::path_to_utf8(path)));
       return Result::kReadError;
     }
 
@@ -72,7 +74,8 @@ SvodContainerDevice::Result SvodContainerDevice::LoadHostFiles() {
     std::error_code ec;
     const uintmax_t fragment_size = std::filesystem::file_size(path, ec);
     if (ec) {
-      XELOGI("Failed to size SVOD file {}.", path);
+      XELOGI("Failed to size SVOD file {}.",
+             xe::strip_pii(xe::path_to_utf8(path)));
       return Result::kReadError;
     }
 

@@ -146,7 +146,7 @@ void HostPathDevice::PopulateEntry(
         XELOGW(
             "HostPathDevice: {} is already on the path being walked; not "
             "following it again",
-            xe::path_to_utf8(parent_entry->host_path()));
+            xe::strip_pii(xe::path_to_utf8(parent_entry->host_path())));
         return;
       }
     }

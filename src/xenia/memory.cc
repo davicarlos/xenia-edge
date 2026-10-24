@@ -223,32 +223,34 @@ bool Memory::Initialize() {
     return false;
   }
 
-#if XE_PLATFORM_MAC
-  // On macOS, reserve a contiguous region chosen by the OS, then map views
-  // into it at fixed offsets.
-  if (MapViewsMac()) {
-    XELOGE("Unable to find a continuous block in the 64bit address space.");
-    assert_always();
-    return false;
-  }
-  mapping_base_ = views_.all_views[0];
-#else
   // Attempt to create our views. This may fail at the first address
   // we pick, so try a few times.
   mapping_base_ = 0;
   for (size_t n = 32; n < 64; n++) {
     auto mapping_base = reinterpret_cast<uint8_t*>(1ull << n);
+#if XE_PLATFORM_MAC
+    if (!MapViewsMac(mapping_base)) {
+#else
     if (!MapViews(mapping_base)) {
+#endif
       mapping_base_ = mapping_base;
       break;
     }
   }
+#if XE_PLATFORM_MAC
+  // Last resort, with x86_64's shrunk __PAGEZERO an OS-chosen base can take
+  // the sub-2GB range PlaceConstData needs.
+  if (!mapping_base_ && !MapViewsMac(nullptr)) {
+    mapping_base_ = views_.all_views[0];
+    XELOGW("Memory: no guest base above 4GB was free, using {}",
+           static_cast<void*>(mapping_base_));
+  }
+#endif
   if (!mapping_base_) {
     XELOGE("Unable to find a continuous block in the 64bit address space.");
     assert_always();
     return false;
   }
-#endif
   virtual_membase_ = mapping_base_;
   physical_membase_ = mapping_base_ + 0x100000000ull;
 
@@ -421,7 +423,7 @@ static const struct {
     },
 };
 #if XE_PLATFORM_MAC
-int Memory::MapViewsMac() {
+int Memory::MapViewsMac(uint8_t* mapping_base) {
   assert_true(xe::countof(map_info) == xe::countof(views_.all_views));
 
   // macOS does not guarantee that a non-MAP_FIXED mmap will honor the requested
@@ -431,14 +433,20 @@ int Memory::MapViewsMac() {
       map_info[xe::countof(map_info) - 1].virtual_address_end -
       map_info[0].virtual_address_start + 1;
 
-  void* reserved_base =
-      mmap(nullptr, total_size, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+  void* reserved_base = mmap(mapping_base, total_size, PROT_NONE,
+                             MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+  if (mapping_base && reserved_base != mapping_base) {
+    if (reserved_base != MAP_FAILED) {
+      munmap(reserved_base, total_size);
+    }
+    return 1;
+  }
   if (reserved_base == MAP_FAILED) {
     XELOGE("MapViewsMac: reserve failed: {}", std::strerror(errno));
     return 1;
   }
 
-  uint8_t* mapping_base = reinterpret_cast<uint8_t*>(reserved_base);
+  mapping_base = reinterpret_cast<uint8_t*>(reserved_base);
   uint64_t granularity_mask = ~uint64_t(system_allocation_granularity_ - 1);
 
   for (size_t n = 0; n < xe::countof(map_info); n++) {

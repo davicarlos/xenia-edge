@@ -456,7 +456,8 @@ void GameConfigPanel::LoadOverrides() {
   try {
     table = config::LoadGameConfig(title_id_);
   } catch (const std::exception& e) {
-    XELOGE("GameConfigPanel: failed to load config: {}", e.what());
+    XELOGE("GameConfigPanel: failed to load config: {}",
+           xe::strip_pii(e.what()));
     loading_ = false;
     return;
   }
@@ -558,7 +559,8 @@ bool GameConfigPanel::SaveOverrides() {
   } catch (const std::exception& e) {
     // No dialog: this runs on every edit, so a modal per keystroke would be
     // worse than the status line saying it didn't take.
-    XELOGE("GameConfigPanel: failed to save config: {}", e.what());
+    XELOGE("GameConfigPanel: failed to save config: {}",
+           xe::strip_pii(e.what()));
     return false;
   }
   return true;

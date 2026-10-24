@@ -125,7 +125,7 @@ int TraceDump::Main(const std::vector<std::string>& args) {
 
   // Normalize the path and make absolute.
   auto abs_path = std::filesystem::absolute(path);
-  XELOGI("Loading trace file {}...", abs_path);
+  XELOGI("Loading trace file {}...", xe::strip_pii(xe::path_to_utf8(abs_path)));
 
   if (!Setup()) {
     XELOGE("Unable to setup trace dump tool");
