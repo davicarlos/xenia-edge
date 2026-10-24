@@ -356,22 +356,47 @@ X_HRESULT XamApp::DispatchMessageSync(uint32_t message, uint32_t buffer_ptr,
       return X_E_SUCCESS;
     }
     case 0x0002C00C: {
-      // Registers one identity feature (classifier): {version, flags,
-      // reserved, unk, name pointer, name length, ...}. The runtime registers
-      // about twenty, named like NuiV1FaceHiRes, during its identity
-      // initialization and needs each to succeed.
+      // Identity data request: {operation, type (8 bytes), input pointer,
+      // input size, output pointer, output size pointer (its size on input)}.
+      // 4D53090F calls it from 0x838C2838:
+      // - operation 2, type 0x101: reads an identity setting by name (input,
+      //   such as NuiV1QualDist) as text, which the title parses and replaces
+      //   with its own default when it can't. xam has none here, so the
+      //   output stays empty.
+      // - operation 1, type 0x10001: converts the title's Kinect ID data to
+      //   version 0x10001 before loading it, first without an output to get
+      //   the size. Titles store it in that version already, so it's copied.
       if (!buffer_ptr) {
         return X_E_INVALIDARG;
       }
-      const uint32_t name_ptr = xe::load_and_swap<uint32_t>(buffer + 16);
-      const uint32_t name_length = xe::load_and_swap<uint32_t>(buffer + 20);
-      std::string_view name;
-      if (name_ptr && name_length && name_length < 256) {
-        name = std::string_view(memory_->TranslateVirtual<const char*>(name_ptr),
-                                name_length);
+      const uint32_t operation = xe::load_and_swap<uint32_t>(buffer);
+      const uint32_t input_ptr = xe::load_and_swap<uint32_t>(buffer + 16);
+      const uint32_t input_size = xe::load_and_swap<uint32_t>(buffer + 20);
+      const uint32_t output_ptr = xe::load_and_swap<uint32_t>(buffer + 24);
+      const uint32_t output_size_ptr = xe::load_and_swap<uint32_t>(buffer + 28);
+      if (operation == 1) {
+        if (!input_ptr || !output_size_ptr) {
+          return X_E_INVALIDARG;
+        }
+        auto output_size =
+            memory_->TranslateVirtual<xe::be<uint32_t>*>(output_size_ptr);
+        if (output_ptr) {
+          if (input_size > *output_size) {
+            return X_E_INVALIDARG;
+          }
+          std::memmove(memory_->TranslateVirtual(output_ptr),
+                       memory_->TranslateVirtual(input_ptr), input_size);
+        }
+        *output_size = input_size;
+        return X_E_SUCCESS;
       }
-      XELOGD("XamApp: NUI identity feature registered: {} (flags {:08X})", name,
-             xe::load_and_swap<uint32_t>(buffer + 4));
+      std::string_view name;
+      if (input_ptr && input_size && input_size < 256) {
+        name = std::string_view(
+            memory_->TranslateVirtual<const char*>(input_ptr), input_size);
+      }
+      XELOGD("XamApp: NUI identity setting {} requested (operation {})", name,
+             operation);
       return X_E_SUCCESS;
     }
     case 0x0002C009: {
