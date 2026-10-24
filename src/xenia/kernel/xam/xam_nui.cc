@@ -587,9 +587,8 @@ dword_result_t XamWriteBiometricData_entry(qword_t xuid, lpdword_t version_ptr,
 DECLARE_XAM_EXPORT1(XamWriteBiometricData, kNone, kImplemented);
 
 // Other
-// Whether Kinect ID signs the profile in, kept in its dashboard settings. xam
-// also deletes the profile's biometric data when it's turned off; none is ever
-// stored here.
+// Whether Kinect ID signs the profile in, kept in its dashboard settings.
+// Turning it off deletes the profile's Kinect ID data, as xam does.
 dword_result_t XamUserNuiEnableBiometric_entry(dword_t user_index,
                                                int_t enable) {
   if (user_index >= XUserMaxUserCount) {
@@ -604,6 +603,12 @@ dword_result_t XamUserNuiEnableBiometric_entry(dword_t user_index,
                             int32_t(enable));
   kernel_state()->xam_state()->user_tracker()->UpsertSetting(
       user_profile->xuid(), kDashboardID, &setting);
+  if (!enable) {
+    auto nui = kernel_state()->nui();
+    nui->WriteStoredBiometricData(user_profile->xuid(), {});
+    nui->SetCachedBiometricData(user_profile->xuid(),
+                                {NUIController::kBiometricNone, {}});
+  }
   return X_E_SUCCESS;
 }
 DECLARE_XAM_EXPORT1(XamUserNuiEnableBiometric, kNone, kImplemented);
