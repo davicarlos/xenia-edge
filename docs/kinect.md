@@ -117,7 +117,8 @@ the faces enrolled for that profile.
 
 With a title running, the guide button menu has a Kinect Tuner: live depth
 and color previews, the skeletons the title tracks, the sensor's elevation
-with a tilt slider, and the microphone level.
+with a tilt slider, and the microphone level. Titles that open the Kinect
+Guide (the guide gesture) open that same menu.
 
 ## Testing the sensor without a title
 

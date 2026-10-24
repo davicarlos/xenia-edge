@@ -1270,7 +1270,10 @@ static X_RESULT ShowGuide() {
   }
   kernel_state()->BroadcastNotification(kXNotificationSystemUI, true);
   if (!show_guide([]() {
-        kernel_state()->BroadcastNotification(kXNotificationSystemUI, false);
+        // The menu can outlive the kernel, closed after the emulator stopped.
+        if (KernelState* state = kernel_state()) {
+          state->BroadcastNotification(kXNotificationSystemUI, false);
+        }
       })) {
     kernel_state()->BroadcastNotification(kXNotificationSystemUI, false);
     return X_ERROR_ACCESS_DENIED;
