@@ -12,6 +12,7 @@
 // (src/registration.c, Apache-2.0).
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <cstdint>
@@ -163,11 +164,57 @@ struct X_PSCAM_READ_FRAME_REQUEST {
 };
 static_assert_size(X_PSCAM_READ_FRAME_REQUEST, 0x30);
 
+// A camera's settings, as the NUI runtime of 4D53090F keeps and sends them
+// (its property setters at 0x82F51FA0 and 0x82F527E8, defaults at
+// 0x82F50D98). Fractional values are 16.16 fixed point.
+struct X_PSCAM_CAMERA_SETTINGS {
+  // kSettingsColorCamera or kSettingsInfraredCamera, and in the low bits which
+  // values the title set itself (kSettingsHas*); without them it asks the
+  // camera for the current ones (code 36).
+  xe::be<uint32_t> flags;
+  // 1 to 3; 1 by default, 2 on PAL consoles. Probably light flicker.
+  xe::be<uint32_t> flicker;
+  // Region the exposure is taken from, off by default: on, and its center
+  // from the image's in pixels (-320 to 320, -240 to 240).
+  xe::be<uint32_t> region_enabled;
+  xe::be<int32_t> region_x;
+  xe::be<int32_t> region_y;
+  // Exposure compensation in stops, -1.75 to 1.75.
+  xe::be<int32_t> exposure_compensation;
+  // 1 automatic exposure (the default), 0 manual.
+  xe::be<uint32_t> auto_exposure;
+  // 0 to 3, up to how many frame periods automatic exposure may take; 2 by
+  // default on PAL consoles.
+  xe::be<uint32_t> auto_exposure_frames;
+  // Metering window: left, top, width and height, as fractions of the image
+  // (0.1, 0.1, 0.8, 0.8 by default).
+  xe::be<int32_t> metering_window[4];
+  // Red, green and blue gains, 1.0 by default.
+  xe::be<int32_t> gains[3];
+  // Manual exposure time in milliseconds, 0 to 2000.
+  xe::be<int32_t> exposure_time;
+  // Reported by the camera; the title only reads it.
+  xe::be<uint32_t> measured;
+  // The console's display refresh rate in Hz.
+  xe::be<int32_t> refresh_rate;
+  // 0 to 7; 6 for the infrared camera. Its meaning isn't known.
+  xe::be<uint32_t> mode;
+  uint8_t unknown_4C[0x10];
+};
+static_assert_size(X_PSCAM_CAMERA_SETTINGS, 0x5C);
+
+constexpr uint32_t kSettingsColorCamera = 0x40000000;
+constexpr uint32_t kSettingsInfraredCamera = 0x80000000;
+constexpr uint32_t kSettingsHasExposureTime = 0x1;
+constexpr uint32_t kSettingsHasGains = 0xE;
+constexpr int32_t kFixedOne = 0x10000;
+
 struct X_PSCAM_CONTROLS_REQUEST {
   X_PSCAM_REQUEST header;
   xe::be<uint32_t> settings_generation;
+  X_PSCAM_CAMERA_SETTINGS settings;
 };
-static_assert_size(X_PSCAM_CONTROLS_REQUEST, 0x1C);
+static_assert_size(X_PSCAM_CONTROLS_REQUEST, 0x78);
 
 struct X_PSCAM_VERSION_REQUEST {
   xe::be<uint32_t> code;
@@ -464,6 +511,23 @@ class CameraDevice {
            memory_->LookupHeap(last_address);
   }
 
+  // The settings titles start from, before any code 35.
+  static X_PSCAM_CAMERA_SETTINGS DefaultSettings(uint32_t camera) {
+    X_PSCAM_CAMERA_SETTINGS settings = {};
+    settings.flags = camera;
+    settings.flicker = 1;
+    settings.auto_exposure = 1;
+    settings.metering_window[0] = kFixedOne / 10;
+    settings.metering_window[1] = kFixedOne / 10;
+    settings.metering_window[2] = kFixedOne * 4 / 5;
+    settings.metering_window[3] = kFixedOne * 4 / 5;
+    for (auto& gain : settings.gains) {
+      gain = kFixedOne;
+    }
+    settings.refresh_rate = 60 * kFixedOne;
+    return settings;
+  }
+
   static size_t GetRequestSize(CameraRequestCode code) {
     size_t size = 0;
     switch (code) {
@@ -507,17 +571,37 @@ class CameraDevice {
             : streaming_ ? kDeviceStateStreaming
                          : kDeviceStateReady;
         return X_STATUS_SUCCESS;
-      case CameraRequestCode::kSetControls:
+      case CameraRequestCode::kSetControls: {
+        // Kept for code 36. Titles leave the color camera's exposure and white
+        // balance automatic, as the sensor already runs them, and nothing
+        // reads the infrared camera, so they aren't sent to the sensor.
+        auto request = Guest<X_PSCAM_CONTROLS_REQUEST>(request_ptr);
+        active_settings_ =
+            request->settings.flags & kSettingsInfraredCamera ? 1 : 0;
+        settings_[active_settings_] = request->settings;
         // Color frames carry the generation once this request has completed
         // (see Complete).
-        // TODO(knuckleslee): The settings are not applied to the sensor.
-        Guest<X_PSCAM_CONTROLS_REQUEST>(request_ptr)->settings_generation =
-            ++requested_generation_;
+        request->settings_generation = ++requested_generation_;
         return X_STATUS_SUCCESS;
+      }
+      case CameraRequestCode::kGetControls: {
+        // The current settings of the camera last set. The values the title
+        // didn't set report the defaults: no manual exposure is running, and
+        // the white balance gains are neutral.
+        X_PSCAM_CAMERA_SETTINGS& settings =
+            Guest<X_PSCAM_CONTROLS_REQUEST>(request_ptr)->settings;
+        settings = settings_[active_settings_];
+        if (!(settings.flags & kSettingsHasGains)) {
+          for (auto& gain : settings.gains) {
+            gain = kFixedOne;
+          }
+        }
+        settings.measured = 0;
+        return X_STATUS_SUCCESS;
+      }
       case CameraRequestCode::kStop:
       case CameraRequestCode::kConfigure:
       case CameraRequestCode::kUnknown33:
-      case CameraRequestCode::kGetControls:
       case CameraRequestCode::kTimeSync:
         return X_STATUS_SUCCESS;
       case CameraRequestCode::kVersion: {
@@ -829,6 +913,11 @@ class CameraDevice {
   // whose completion has run, which color frames are tagged with.
   uint8_t requested_generation_ = 0;
   std::atomic<uint8_t> settings_generation_ = 0;
+  // The color and infrared cameras' settings, and which one was set last.
+  std::array<X_PSCAM_CAMERA_SETTINGS, 2> settings_ = {
+      DefaultSettings(kSettingsColorCamera),
+      DefaultSettings(kSettingsInfraredCamera)};
+  uint32_t active_settings_ = 0;
   std::vector<uint8_t> frame_;
   std::vector<uint8_t> record_color_;
   uint32_t record_index_ = 0;
