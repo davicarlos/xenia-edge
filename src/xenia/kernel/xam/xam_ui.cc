@@ -32,6 +32,7 @@
 #include "xenia/kernel/xam/ui/disc_swap_ui.h"
 #include "xenia/kernel/xam/ui/fitness_body_profile_ui.h"
 #include "xenia/kernel/xam/ui/game_achievements_ui.h"
+#include "xenia/kernel/xam/ui/kinect_tuner_ui.h"
 #include "xenia/kernel/xam/ui/gamercard_ui.h"
 #include "xenia/kernel/xam/ui/passcode_ui.h"
 #include "xenia/kernel/xam/ui/signin_ui.h"
@@ -1269,26 +1270,43 @@ dword_result_t XamShowNuiTroubleshooterUI_entry(dword_t user_index,
      XamShowNuiTroubleshooterUI(0xff,0,0) if param = -0x7ff8fffe
   */
 
+  // With a sensor, the player is engaged and the Kinect Tuner opens
+  // (0x21028), without holding the title, which waits for it on its own
+  // thread. Without one, xam tells the player the sensor isn't there.
   const Emulator* emulator = kernel_state()->emulator();
   xe::ui::Window* display_window = emulator->display_window();
   xe::ui::ImGuiDrawer* imgui_drawer = emulator->imgui_drawer();
-  if (display_window && imgui_drawer) {
-    xe::threading::Fence fence;
-    if (display_window->app_context().CallInUIThreadSynchronous([&]() {
-          xe::ui::ImGuiDialog::ShowMessageBox(
-              imgui_drawer, "NUI Troubleshooter",
-              "The game has indicated there is a problem with NUI (Kinect).")
-              ->Then(&fence);
-        })) {
-      kernel_state()->xam_state()->is_xam_dialog_present_.store(true);
-      GuestScheduler::WaitOnFence(fence);
-      kernel_state()->xam_state()->is_xam_dialog_present_.store(false);
-    }
+  if (!display_window || !imgui_drawer) {
+    return X_ERROR_SUCCESS;
   }
-
+  NUIController* nui = kernel_state()->nui();
+  if (nui->IsDeviceReady()) {
+    if (tracking_id) {
+      nui->SetEngagedTrackingId(tracking_id);
+    }
+    xe::hid::InputSystem* input_system = emulator->input_system();
+    display_window->app_context().CallInUIThread(
+        [imgui_drawer, input_system]() {
+          new ui::KinectTunerUI(imgui_drawer, input_system);
+        });
+    return X_ERROR_SUCCESS;
+  }
+  xe::threading::Fence fence;
+  if (display_window->app_context().CallInUIThreadSynchronous([&]() {
+        xe::ui::ImGuiDialog::ShowMessageBox(
+            imgui_drawer, "Kinect",
+            "The Kinect sensor isn't connected. Connect it and set "
+            "allow_kinect_camera, or play a recording with "
+            "kinect_replay_path.")
+            ->Then(&fence);
+      })) {
+    kernel_state()->xam_state()->is_xam_dialog_present_.store(true);
+    GuestScheduler::WaitOnFence(fence);
+    kernel_state()->xam_state()->is_xam_dialog_present_.store(false);
+  }
   return X_ERROR_SUCCESS;
 }
-DECLARE_XAM_EXPORT1(XamShowNuiTroubleshooterUI, kNone, kStub);
+DECLARE_XAM_EXPORT1(XamShowNuiTroubleshooterUI, kNone, kImplemented);
 
 dword_result_t XamShowNuiHardwareRequiredUI_entry(unknown_t unk1) {
   if (unk1 != 0) {
