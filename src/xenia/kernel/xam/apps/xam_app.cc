@@ -12,11 +12,13 @@
 #include <cstring>
 
 #include "xenia/base/logging.h"
+#include "xenia/cpu/processor.h"
 #include "xenia/kernel/kernel_state.h"
 #include "xenia/kernel/nui.h"
 #include "xenia/kernel/xam/xam_content_device.h"
 #include "xenia/kernel/xam/xam_private.h"
 #include "xenia/kernel/xenumerator.h"
+#include "xenia/kernel/xthread.h"
 
 /* Notes:
    - Messages ids that start with 0x00021xxx are UI calls
@@ -180,6 +182,9 @@ X_HRESULT XamApp::DispatchMessageSync(uint32_t message, uint32_t buffer_ptr,
     case 0x0002B001: {
       // Games used in:
       // 42560819, 373307D9
+      if (!buffer_ptr) {
+        return X_E_INVALIDARG;
+      }
       uint32_t ms_delay = xe::load_and_swap<uint32_t>(buffer);
 
       XELOGD("XNuiDelayUI unimplemented({:08X})", ms_delay);
@@ -191,7 +196,10 @@ X_HRESULT XamApp::DispatchMessageSync(uint32_t message, uint32_t buffer_ptr,
       // It only receives buffer
       X_NUI_TITLE_INITIALIZE_DATA* args =
           reinterpret_cast<X_NUI_TITLE_INITIALIZE_DATA*>(buffer);
-      XELOGD("XNuiTitleInitialize({:016X}, {:016X}, flags: 0x{:08X}), Stubbed",
+      if (!buffer_ptr) {
+        return X_E_INVALIDARG;
+      }
+      XELOGD("XNuiTitleInitialize({:016X}, {:016X}, flags: 0x{:08X})",
              args->xam_version.get(), args->xtl_version.get(),
              args->flags.get());
       X_HRESULT result = X_E_FAIL;
@@ -200,16 +208,15 @@ X_HRESULT XamApp::DispatchMessageSync(uint32_t message, uint32_t buffer_ptr,
         kernel_state_->nui()->SetNUIVersion(uint64_t(args->xam_version), 0);
         kernel_state_->nui()->SetNUIVersion(uint64_t(args->xtl_version), 1);
         kernel_state_->nui()->SetInitFlags(uint32_t(args->flags));
+        // Bit 31 leaves xam's HUD off, which xam answers with E_FAIL; the
+        // HUD starts with nobody engaged (0x816AD130).
         if ((args->flags & 0x80000000) == 0) {
-          XELOGD("Todo: write data to two pointers");
+          kernel_state_->nui()->SetEngagedTrackingId(0);
           result = X_E_SUCCESS;
         }
       }
-      if ((args->flags & 0x40000000) == 0) {
-        XELOGD(
-            "Todo: call XamNuiGetDeviceStatus and if status does not have flag "
-            "1 set but has flags 4 and 0x40 call XamShowNuiTroubleshooterUI");
-      }
+      // Without bit 30 xam opens the troubleshooter (0x200000) when the sensor
+      // isn't ready; here titles run without one.
 
       return result;
     }
@@ -222,6 +229,7 @@ X_HRESULT XamApp::DispatchMessageSync(uint32_t message, uint32_t buffer_ptr,
       kernel_state_->nui()->SetNUIVersion(0, 1);
       kernel_state_->nui()->SetInitFlags(0);
       kernel_state_->nui()->SetTiltCallback(0);
+      kernel_state_->nui()->SetFrameObserver(0);
 
       XELOGD("XNuiTitleShutdown stubbed");
       return X_E_SUCCESS;
@@ -276,6 +284,16 @@ X_HRESULT XamApp::DispatchMessageSync(uint32_t message, uint32_t buffer_ptr,
         constexpr uint64_t kRuntimeVersion = 5;
         const uint64_t version = xe::load_and_swap<uint64_t>(buffer);
         if (version == kRuntimeVersion) {
+          // Whoever set an observer with 0x2B00E sees the frame before the
+          // HUD (0x816F9FC0); the Kinect Tuner draws from it.
+          const uint32_t observer = kernel_state_->nui()->GetFrameObserver();
+          XThread* thread = XThread::GetCurrentThread();
+          if (observer && thread) {
+            uint64_t args[] = {buffer_ptr};
+            kernel_state_->processor()->Execute(thread->thread_state(),
+                                                observer, args,
+                                                xe::countof(args));
+          }
           xeXamNuiHudInterpretFrame(buffer);
         } else if (snapshot_frame == 1) {
           XELOGW("XamApp: NUI skeleton frames of runtime version {}", version);
@@ -298,6 +316,16 @@ X_HRESULT XamApp::DispatchMessageSync(uint32_t message, uint32_t buffer_ptr,
             xe::load_and_swap<float>(buffer + 24),
             xe::load_and_swap<float>(buffer + 28));
       }
+      return X_E_SUCCESS;
+    }
+    case 0x0002B00E: {
+      // Sets the observer of the skeleton frames titles publish, or clears it
+      // with 0 (0x816F9F78).
+      if (!buffer_ptr) {
+        return X_E_INVALIDARG;
+      }
+      kernel_state_->nui()->SetFrameObserver(
+          xe::load_and_swap<uint32_t>(buffer));
       return X_E_SUCCESS;
     }
     case 0x0002A004:

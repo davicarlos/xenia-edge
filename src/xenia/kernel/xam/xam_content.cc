@@ -617,6 +617,19 @@ dword_result_t XamContentOpenFile_entry(
 }
 DECLARE_XAM_EXPORT1(XamContentOpenFile, kContent, kSketchy);
 
+// Finds the system package that holds an indexed file (0x816E8D40, message
+// 0xFE 0x25002), as BiometricSetup finds the NUIPACK; there are no system
+// packages here.
+dword_result_t XamPackageManagerFindPackageContainingIndexedXEX_entry(
+    lpvoid_t unk1, lpvoid_t unk2, dword_t unk3, lpvoid_t package) {
+  if (!package) {
+    return X_E_INVALIDARG;
+  }
+  return X_HRESULT_FROM_WIN32(X_ERROR_FILE_NOT_FOUND);
+}
+DECLARE_XAM_EXPORT1(XamPackageManagerFindPackageContainingIndexedXEX, kContent,
+                    kStub);
+
 dword_result_t XamContentFlush_entry(lpstring_t root_name,
                                      pointer_t<XAM_OVERLAPPED> overlapped_ptr) {
   X_RESULT result = X_ERROR_SUCCESS;

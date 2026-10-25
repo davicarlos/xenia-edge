@@ -101,7 +101,7 @@ class NUIController {
   // Without the motor device the angle is the last one a title set.
   static constexpr int32_t kElevationMinimum = -27;
   static constexpr int32_t kElevationMaximum = 27;
-  int32_t GetElevationAngle() const { return elevation_angle_; }
+  int32_t GetElevationAngle() const { return elevation_angle_.load(); }
   void SetElevationAngle(int32_t angle);
   // Stops the motor where it is.
   void StopElevationMovement();
@@ -181,6 +181,23 @@ class NUIController {
   uint32_t GetIdentityCallback() const { return identity_callback_; }
   void SetIdentityCallback(uint32_t callback) { identity_callback_ = callback; }
 
+  // Whose the system's HUD and Guide are (XamHudSetUserIndex), 0xFF for
+  // nobody's (0x81692440).
+  static constexpr uint32_t kNoHudUser = 0xFF;
+  uint32_t GetHudUserIndex() const { return hud_user_index_; }
+  void SetHudUserIndex(uint32_t user_index) { hud_user_index_ = user_index; }
+
+  // Who watches each skeleton frame the title sends (XamApp 0x2B00E, the
+  // Kinect Tuner's live view); xam calls it with the frame (0x816F9FC0).
+  uint32_t GetFrameObserver() const { return frame_observer_; }
+  void SetFrameObserver(uint32_t callback) { frame_observer_ = callback; }
+
+  // The depth calibration the sensor runs with (PsCam code 44, which
+  // XamNuiGetLoadedDepthCalibration reads at 0x817FCB40): two words, the
+  // depth scale and offset the Kinect calibration found (Dash.FieldCalibration
+  // stores them with XamNuiStoreDepthCalibration); 1.0 and 0 without one.
+  std::array<uint32_t, 2> GetLoadedDepthCalibration() const;
+
  private:
   // Expects motor_mutex_ held and motor_ set.
   bool SendAudioCalibration();
@@ -194,22 +211,27 @@ class NUIController {
   std::atomic<uint32_t> tilt_callback_ = 0;
   std::atomic<uint32_t> tilt_status_callback_ = 0;
   std::atomic<uint32_t> identity_callback_ = 0;
+  std::atomic<uint32_t> hud_user_index_ = kNoHudUser;
+  std::atomic<uint32_t> frame_observer_ = 0;
   std::array<std::atomic<uint32_t>, 4> user_enrollments_ = {
       kNoEnrollment, kNoEnrollment, kNoEnrollment, kNoEnrollment};
   uint32_t init_flags_ = 0x0;
   // Tilts the sensor so the closest tracked player fits the depth image, as
   // a console calibrated in its Kinect Tuner would be (kinect_auto_tilt).
   void UpdateAutoTilt(const NuiSkeletonSnapshot& snapshot);
-  bool MoveMotor(int32_t angle);
+  // Expects motor_mutex_ held.
+  bool MoveMotorLocked(int32_t angle);
 
-  int32_t elevation_angle_ = 0;
-  uint32_t camera_flags_ = 0;
+  // Written with motor_mutex_ held; read from any thread.
+  std::atomic<int32_t> elevation_angle_ = 0;
+  std::atomic<uint32_t> camera_flags_ = 0;
   std::mutex biometric_mutex_;
   std::unordered_map<uint64_t, BiometricData> cached_biometric_data_;
   std::once_flag serial_number_once_;
   std::string serial_number_;
   // Last time anything tilted the sensor; the automatic tilt waits for the
-  // motor and the depth image to settle after it.
+  // motor and the depth image to settle after it. This and the automatic
+  // tilt's state below are guarded by motor_mutex_.
   std::chrono::steady_clock::time_point last_tilt_time_;
   // Frames in a row the player has been out of the picture.
   uint32_t auto_tilt_out_frames_ = 0;

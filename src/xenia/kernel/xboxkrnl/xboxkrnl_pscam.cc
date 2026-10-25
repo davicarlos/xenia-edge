@@ -33,6 +33,7 @@
 #include "xenia/hid/kinect/usb_audio.h"
 #include "xenia/hid/kinect/usb_camera.h"
 #include "xenia/kernel/kernel_state.h"
+#include "xenia/kernel/nui.h"
 #include "xenia/kernel/util/shim_utils.h"
 #include "xenia/kernel/xboxkrnl/xboxkrnl_private.h"
 #include "xenia/kernel/xthread.h"
@@ -101,6 +102,9 @@ enum class CameraRequestCode : uint32_t {
   kUnknown33 = 33,
   kSetControls = 35,
   kGetControls = 36,
+  // Replies at +0x04 with the depth calibration's scale and offset
+  // (XamNuiGetLoadedDepthCalibration, 0x817FCB40).
+  kLoadedDepthCalibration = 44,
 };
 
 enum class CameraStream : uint32_t {
@@ -424,15 +428,19 @@ class CameraDevice {
     }
 
     uint32_t bytes = 0;
-    const X_STATUS status = Handle(code, request_ptr, bytes);
     PendingRequest pending;
+    {
+      // Titles send camera settings from more than one thread.
+      std::lock_guard<xe_mutex> lock(settings_mutex_);
+      pending.status = Handle(code, request_ptr, bytes);
+      pending.generation = requested_generation_;
+    }
+    const X_STATUS status = pending.status;
     pending.request_ptr = request_ptr;
     pending.completion = completion;
-    pending.status = status;
     pending.bytes = bytes;
     pending.new_settings =
         code == CameraRequestCode::kSetControls && XSUCCEEDED(status);
-    pending.generation = requested_generation_;
     {
       std::lock_guard<xe_mutex> lock(mutex_);
       if (code == CameraRequestCode::kStop) {
@@ -616,6 +624,13 @@ class CameraDevice {
       case CameraRequestCode::kRegistration:
         WriteRegistration(request_ptr);
         return X_STATUS_SUCCESS;
+      case CameraRequestCode::kLoadedDepthCalibration: {
+        const auto words = kernel_state_->nui()->GetLoadedDepthCalibration();
+        auto request = Guest<X_PSCAM_REQUEST>(request_ptr);
+        request->unknown_04[0] = words[0];
+        request->unknown_04[1] = words[1];
+        return X_STATUS_SUCCESS;
+      }
       case CameraRequestCode::kDepthTable:
         return WriteDepthTable(request_ptr);
       case CameraRequestCode::kTiming: {
@@ -912,6 +927,8 @@ class CameraDevice {
   uint32_t depth_sequence_ = 0;
   uint32_t color_sequence_ = 0;
   std::atomic<bool> streaming_ = false;
+  // Guards Handle: the settings below and the replies built from them.
+  xe_mutex settings_mutex_;
   // Generation of the latest camera settings request, and of the latest one
   // whose completion has run, which color frames are tagged with.
   uint8_t requested_generation_ = 0;

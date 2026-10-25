@@ -200,6 +200,9 @@ static std::filesystem::path GetDepthCalibrationPath() {
 
 dword_result_t XamNuiGetDepthCalibration_entry(
     pointer_t<X_NUI_DEPTH_CALIBRATION> depth_data) {
+  if (!depth_data) {
+    return X_E_INVALIDARG;
+  }
   // always cleared before new data written
   std::memset(depth_data, 0, sizeof(X_NUI_DEPTH_CALIBRATION));
   FILE* file = xe::filesystem::OpenFile(GetDepthCalibrationPath(), "rb");
@@ -296,6 +299,44 @@ dword_result_t XamNuiStoreDepthCalibration_entry(
          X_FACILITY_NT_BIT;
 }
 DECLARE_XAM_EXPORT1(XamNuiStoreDepthCalibration, kNone, kImplemented);
+
+// The depth calibration the sensor runs with (PsCam code 44, 0x816F9A48 and
+// 0x817FCB40): the scale and the offset.
+dword_result_t XamNuiGetLoadedDepthCalibration_entry(lpdword_t calibration) {
+  if (!calibration) {
+    return X_E_INVALIDARG;
+  }
+  if (!kernel_state()->nui()->NuiInitialized()) {
+    return X_STATUS_DEVICE_NOT_CONNECTED | X_FACILITY_NT_BIT;
+  }
+  const auto words = kernel_state()->nui()->GetLoadedDepthCalibration();
+  calibration[0] = words[0];
+  calibration[1] = words[1];
+  return X_STATUS_SUCCESS | X_FACILITY_NT_BIT;
+}
+DECLARE_XAM_EXPORT1(XamNuiGetLoadedDepthCalibration, kNone, kImplemented);
+
+// The color camera's intrinsics, PsCam code 46 with selector 0x100
+// (0x816F9B90): fx, fy, cx and cy in pixels, in the order Dash.FieldCalibration
+// builds its camera matrix from (0x9BD22C38). These are the Kinect's nominal
+// ones at 640x480.
+dword_result_t XamNuiGetCameraIntrinsics_entry(lpvoid_t buffer, dword_t size,
+                                               lpdword_t returned_size) {
+  if (!buffer || !returned_size || size < 4 * sizeof(float)) {
+    return X_E_INVALIDARG;
+  }
+  if (!kernel_state()->nui()->NuiInitialized()) {
+    return X_E_DEVICE_NOT_CONNECTED;
+  }
+  auto out = buffer.as<xe::be<float>*>();
+  out[0] = 531.15f;
+  out[1] = 531.15f;
+  out[2] = 320.0f;
+  out[3] = 240.0f;
+  *returned_size = 4 * sizeof(float);
+  return X_E_SUCCESS;
+}
+DECLARE_XAM_EXPORT1(XamNuiGetCameraIntrinsics, kNone, kSketchy);
 
 // Skeleton
 // NUI_SKELETON_FRAME as xam reads it (big-endian): six NUI_SKELETON_DATA from
@@ -662,15 +703,31 @@ dword_result_t XamNuiCameraElevationStopMovement_entry() {
 }
 DECLARE_XAM_EXPORT1(XamNuiCameraElevationStopMovement, kNone, kSketchy);
 
-dword_result_t XamNuiCameraRememberFloor_entry(unknown_t unk1, unknown_t unk2) {
-  // Stores the floor plane the title found for the camera's automatic tilt.
-  // Nothing uses it without the motor.
-  if (!kernel_state()->nui()->NuiInitialized()) {
+dword_result_t XamNuiCameraGetTiltControllerType_entry();
+
+// Keeps the floor plane the title found (0x816FA618) for the system's
+// automatic tilt, which here finds the floor itself; xam refuses it without a
+// tilt controller.
+dword_result_t XamNuiCameraRememberFloor_entry(qword_t normal_xy,
+                                               qword_t normal_z_distance,
+                                               dword_t unk) {
+  const int controller_type = XamNuiCameraGetTiltControllerType_entry();
+  if (controller_type != 1 && controller_type != 2) {
     return X_E_DEVICE_NOT_CONNECTED;
   }
+  // The plane comes by value, two floats in each register.
+  auto high = [](uint64_t v) {
+    return xe::memory::Reinterpret<float>(uint32_t(v >> 32));
+  };
+  auto low = [](uint64_t v) {
+    return xe::memory::Reinterpret<float>(uint32_t(v));
+  };
+  XELOGD("Kinect: title floor ({:.3f}, {:.3f}, {:.3f}) at {:.1f}",
+         high(normal_xy), low(normal_xy), high(normal_z_distance),
+         low(normal_z_distance));
   return X_ERROR_SUCCESS;
 }
-DECLARE_XAM_EXPORT1(XamNuiCameraRememberFloor, kNone, kStub);
+DECLARE_XAM_EXPORT1(XamNuiCameraRememberFloor, kNone, kSketchy);
 
 // The title's tilt engine reports its state, 0x2B006 (0x10 bytes) or 0x2B00C
 // (0xE0 bytes), to whoever set XamNuiCameraElevationSetCallback (0x816FA1A8
@@ -794,6 +851,9 @@ dword_result_t XamNuiCameraSetFlags_entry(qword_t flags, dword_t mask) {
     return X_ERROR_SUCCESS;
   }
   if (controller_type == 2) {
+    NUIController* nui = kernel_state()->nui();
+    nui->SetCameraFlags((nui->GetCameraFlags() & ~uint32_t(mask)) |
+                        (uint32_t(flags) & uint32_t(mask)));
     return X_ERROR_SUCCESS;
   }
   return X_E_DEVICE_NOT_CONNECTED;
@@ -886,7 +946,7 @@ dword_result_t XamNuiGetSupportString_entry(lpvoid_t buffer, dword_t size) {
   // The firmware in the system update, fwversions.txt 01.02.0810.00.
   const std::string text =
       fmt::format("K:{:02d}:{:02d}:{:02d}:{:02d}:{:02d}.{:02d}.{:04d}.{:02d}:{:>12}",
-                  present ? 1 : 0, 0, 0, present ? 0 : 1, 0, 1, 2, 810, 0,
+                  present ? 1 : 0, 0, 0, present ? 0 : 1, 1, 2, 810, 0,
                   serial);
   const size_t length = std::min<size_t>(text.size(), size - 1);
   std::memcpy(buffer.as<char*>(), text.data(), length);
@@ -1004,16 +1064,14 @@ dword_result_t XamNuiIdentityEnrollForSignIn_entry(dword_t unk1, qword_t unk2,
 }
 DECLARE_XAM_EXPORT1(XamNuiIdentityEnrollForSignIn, kNone, kStub);
 
+// Cancels an identification (0x2C00E, 0x8180D910); they finish at once here.
 dword_result_t XamNuiIdentityAbort_entry(dword_t unk) {
   if (XamNuiHudIsEnabled_entry() == false) {
     return X_E_FAIL;
   }
-  // buffer [4]
-  // buffer[0] = unk
-  // return func(0xfe,0x2c00e,buffer,4,0)
-  return X_E_FAIL;
+  return X_E_SUCCESS;
 }
-DECLARE_XAM_EXPORT1(XamNuiIdentityAbort, kNone, kStub);
+DECLARE_XAM_EXPORT1(XamNuiIdentityAbort, kNone, kImplemented);
 
 // Kinect ID enrollment of a signed-in user; nobody is ever enrolled, for which
 // xam reports index -2.
@@ -1587,10 +1645,9 @@ bool GuidePoseHeld(GuidePose& pose, const SkeletonJoints& joints,
               : left_out > 25.0f && left_out < 65.0f &&
                     std::abs(left_forward) < 20.0f && left_bend < 35.0f;
   // The right arm within 20 degrees of hanging down and bent under 110,
-  // unless its hand isn't tracked.
+  // unless its hand isn't tracked; the relaxed pose leaves it free.
   bool right = true;
-  if (joints.state(kJointHandRight) && (!relaxed ||
-      joints.state(kJointHandRight) == kSkeletonTracked)) {
+  if (!relaxed && joints.state(kJointHandRight)) {
     float right_out, right_forward;
     arm_angles(pose.shoulder_right, pose.hand_right, -1.0f, right_out,
                right_forward);
@@ -1612,7 +1669,9 @@ bool GuidePoseHeld(GuidePose& pose, const SkeletonJoints& joints,
   return left && right && trunk;
 }
 
-void InterpretFrame(NuiHudState& hud, uint8_t* frame, float dt_ms) {
+// Returns whether the player held the guide gesture, to open the Guide once
+// the HUD is unlocked.
+bool InterpretFrame(NuiHudState& hud, uint8_t* frame, float dt_ms) {
   auto nui = kernel_state()->nui();
   float up[3];
   for (uint32_t i = 0; i < 3; ++i) {
@@ -1723,16 +1782,16 @@ void InterpretFrame(NuiHudState& hud, uint8_t* frame, float dt_ms) {
       pose.held_ms = 0.0f;
       pose.cooldown_ms = GuidePose::kCooldownMs;
     }
-    const X_RESULT shown = xeXamShowGuide();
-    XELOGI("Kinect: guide gesture by player {:08X}, Guide {}", guide_player,
-           shown == X_ERROR_SUCCESS ? "opened" : "unavailable");
+    XELOGI("Kinect: guide gesture by player {:08X}", guide_player);
   }
+  return open_guide;
 }
 
 }  // namespace
 
 X_RESULT xeXamNuiHudInterpretFrame(uint8_t* frame) {
   X_RESULT result = X_E_FAIL;
+  bool open_guide = false;
   if (frame && XamNuiHudIsEnabled_entry()) {
     NuiHudState& hud = GetHudState();
     std::lock_guard<std::mutex> lock(hud.mutex);
@@ -1746,8 +1805,12 @@ X_RESULT xeXamNuiHudInterpretFrame(uint8_t* frame) {
     }
     hud.last_frame = now;
     hud.have_last_frame = true;
-    InterpretFrame(hud, frame, dt_ms);
+    open_guide = InterpretFrame(hud, frame, dt_ms);
     result = X_E_SUCCESS;
+  }
+  // The Guide pauses the title, which may be waiting on the HUD.
+  if (open_guide && xeXamShowGuide() != X_ERROR_SUCCESS) {
+    XELOGI("Kinect: the Guide is unavailable");
   }
   // The system has the player's input while its UI is open.
   if (kernel_state()->xam_state()->IsUIActive()) {
@@ -1778,6 +1841,62 @@ dword_result_t XamNuiHudGetEngagedEnrollmentIndex_entry() {
   return 0xFFFFFFFE;
 }
 DECLARE_XAM_EXPORT1(XamNuiHudGetEngagedEnrollmentIndex, kNone, kImplemented);
+
+// Who the player with the tracking ID is (0x8180DA50): xam asks the title's
+// identity engine (0x2C007) and finishes the overlapped later; here it's the
+// user bound to the enrollment index the skeleton had in the last frame the HUD
+// interpreted, or 0xFE for nobody. nuihud waits for 0x800703E5.
+dword_result_t XamNuiIdentityIdentifyWithBiometric_entry(
+    qword_t tracking_id, lpvoid_t overlapped, lpdword_t user_index,
+    lpdword_t unk) {
+  if (!XamNuiHudIsEnabled_entry()) {
+    return X_E_FAIL;
+  }
+  uint32_t enrollment = NUIController::kNoEnrollment;
+  {
+    NuiHudState& hud = GetHudState();
+    std::lock_guard<std::mutex> lock(hud.mutex);
+    for (uint32_t i = 0; hud.interpreted && i < kSkeletonCount; ++i) {
+      if (hud.tracking_ids[i] && hud.tracking_ids[i] == uint32_t(tracking_id)) {
+        enrollment = hud.enrollment_indices[i];
+      }
+    }
+  }
+  uint32_t user = 0xFE;
+  NUIController* nui = kernel_state()->nui();
+  for (uint32_t i = 0; enrollment != NUIController::kNoEnrollment &&
+                       i < XUserMaxUserCount;
+       ++i) {
+    if (nui->GetUserEnrollment(i) == enrollment) {
+      user = i;
+    }
+  }
+  XELOGD("Kinect: identified player {:08X} (enrollment {:08X}) as user {:02X}",
+         uint32_t(tracking_id), enrollment, user);
+  if (user_index) {
+    *user_index = user;
+  }
+  if (!overlapped) {
+    return X_E_SUCCESS;
+  }
+  kernel_state()->CompleteOverlappedImmediate(overlapped.guest_address(),
+                                              X_ERROR_SUCCESS);
+  return X_HRESULT_FROM_WIN32(X_ERROR_IO_PENDING);
+}
+DECLARE_XAM_EXPORT1(XamNuiIdentityIdentifyWithBiometric, kNone,
+                    kImplemented);
+
+// The user the system's HUD and Guide belong to (0x81692440 and its setter),
+// 0xFF for none.
+dword_result_t XamHudGetUserIndex_entry() {
+  return kernel_state()->nui()->GetHudUserIndex();
+}
+DECLARE_XAM_EXPORT1(XamHudGetUserIndex, kNone, kImplemented);
+
+void XamHudSetUserIndex_entry(dword_t user_index) {
+  kernel_state()->nui()->SetHudUserIndex(user_index);
+}
+DECLARE_XAM_EXPORT1(XamHudSetUserIndex, kNone, kImplemented);
 
 // xam hands the setting to its HUD (0x81692C48), which nothing here draws.
 dword_result_t XamNuiHudEnableInputFilter_entry(dword_t enable) {

@@ -18,6 +18,7 @@
 #include "xenia/base/cvar.h"
 #include "xenia/base/filesystem.h"
 #include "xenia/config.h"
+#include "xenia/emulator.h"
 #include "xenia/base/logging.h"
 #include "xenia/hid/kinect/usb_audio.h"
 #include "xenia/hid/kinect/usb_camera.h"
@@ -139,13 +140,31 @@ uint64_t NUIController::GetSessionId() { return session_id; }
 void NUIController::SetSessionId(uint64_t id) { session_id = id; }
 
 void NUIController::SetElevationAngle(int32_t angle) {
-  MoveMotor(angle);
+  std::lock_guard<std::mutex> lock(motor_mutex_);
+  MoveMotorLocked(angle);
 }
 
-bool NUIController::MoveMotor(int32_t angle) {
-  elevation_angle_ =
-      std::clamp(angle, kElevationMinimum, kElevationMaximum);
-  std::lock_guard<std::mutex> lock(motor_mutex_);
+std::array<uint32_t, 2> NUIController::GetLoadedDepthCalibration() const {
+  // The stored block starts with the scale and the offset, big-endian floats.
+  std::array<uint32_t, 2> words = {0x3F800000, 0};
+  FILE* file = xe::filesystem::OpenFile(
+      KernelState::shared()->emulator()->storage_root() /
+          "kinect_depth_calibration.bin",
+      "rb");
+  if (!file) {
+    return words;
+  }
+  uint8_t bytes[8];
+  if (std::fread(bytes, 1, sizeof(bytes), file) == sizeof(bytes)) {
+    words[0] = xe::load_and_swap<uint32_t>(bytes);
+    words[1] = xe::load_and_swap<uint32_t>(bytes + 4);
+  }
+  std::fclose(file);
+  return words;
+}
+
+bool NUIController::MoveMotorLocked(int32_t angle) {
+  elevation_angle_ = std::clamp(angle, kElevationMinimum, kElevationMaximum);
   last_tilt_time_ = std::chrono::steady_clock::now();
   auto_tilt_out_frames_ = 0;
   auto_tilt_framed_ = false;
@@ -153,10 +172,10 @@ bool NUIController::MoveMotor(int32_t angle) {
     return false;
   }
   if (!motor_->SetTiltAngle(elevation_angle_)) {
-    XELOGW("NUI: the Kinect motor did not accept tilt {}", elevation_angle_);
+    XELOGW("NUI: the Kinect motor did not accept tilt {}", elevation_angle_.load());
     return false;
   }
-  XELOGI("NUI: tilting the Kinect to {} degrees", elevation_angle_);
+  XELOGI("NUI: tilting the Kinect to {} degrees", elevation_angle_.load());
   return true;
 }
 
@@ -164,12 +183,11 @@ void NUIController::UpdateAutoTilt(const NuiSkeletonSnapshot& snapshot) {
   if (!cvars::kinect_auto_tilt) {
     return;
   }
-  {
-    std::lock_guard<std::mutex> lock(motor_mutex_);
-    if (!motor_ || std::chrono::steady_clock::now() - last_tilt_time_ <
-                       kAutoTiltSettleTime) {
-      return;
-    }
+  // Held throughout: titles may tilt the sensor from their own threads.
+  std::lock_guard<std::mutex> lock(motor_mutex_);
+  if (!motor_ || std::chrono::steady_clock::now() - last_tilt_time_ <
+                     kAutoTiltSettleTime) {
+    return;
   }
   // The closest tracked player.
   const NuiSkeletonSnapshot::Skeleton* player = nullptr;
@@ -219,7 +237,7 @@ void NUIController::UpdateAutoTilt(const NuiSkeletonSnapshot& snapshot) {
         SetCalibratedElevation(elevation_angle_);
         config::SaveConfig();
         XELOGI("NUI: saved {} degrees as the Kinect elevation",
-               elevation_angle_);
+               elevation_angle_.load());
       }
     }
     return;
@@ -242,14 +260,14 @@ void NUIController::UpdateAutoTilt(const NuiSkeletonSnapshot& snapshot) {
     shift = bottom + limit;
   }
   const int32_t target =
-      std::clamp(int32_t(std::lround(elevation_angle_ + shift)),
+      std::clamp(int32_t(std::lround(elevation_angle_.load() + shift)),
                  kElevationMinimum, kElevationMaximum);
-  if (std::abs(target - elevation_angle_) < kAutoTiltMinimumStep) {
+  if (std::abs(target - elevation_angle_.load()) < kAutoTiltMinimumStep) {
     return;
   }
   XELOGI("NUI: player spans {:.0f} to {:.0f} degrees; tilting to frame them",
          bottom, top);
-  if (MoveMotor(target)) {
+  if (MoveMotorLocked(target)) {
     auto_tilted_ = true;
   }
 }
