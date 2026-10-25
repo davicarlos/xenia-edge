@@ -18,7 +18,7 @@ if(XE_TARGET_X86_64)
 endif()
 target_link_libraries(xenia-kernel PUBLIC
   asio fmt mbedtls zlib-ng pugixml xenia-apu xenia-base xenia-cpu
-  xenia-hid xenia-net xenia-vfs
+  xenia-hid xenia-hid-kinect xenia-net xenia-vfs
 )
 xe_target_defaults(xenia-kernel)
 
