@@ -160,6 +160,8 @@ bool xeXamChooseIndieGame(std::string* file_name, uint32_t* device_id,
 
 // Opens the Guide (the guide button menu) for the title, as xam's Guide.
 X_RESULT xeXamShowGuide();
+// Whether the Guide xeXamShowGuide opened is still open.
+bool xeXamIsGuideOpen();
 
 }  // namespace xam
 }  // namespace kernel

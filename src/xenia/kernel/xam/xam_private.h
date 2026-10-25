@@ -12,6 +12,7 @@
 
 #include "xenia/base/byte_order.h"
 #include "xenia/cpu/export_resolver.h"
+#include "xenia/xbox.h"
 #include "xenia/kernel/xam/xam_ordinals.h"
 
 namespace xe {
@@ -31,6 +32,10 @@ uint32_t xeXGSetTextureHeaderEx(uint32_t width, uint32_t height,
                                 uint32_t* base_size_out,
                                 uint32_t* mip_size_out);
 void xeXGOffsetResourceAddress(xe::be<uint32_t>* resource, uint32_t offset);
+
+// The NUI HUD's handling of a skeleton frame (XamNuiHudInterpretFrame): the
+// tracked players, position warnings, engagement and the guide gesture.
+X_RESULT xeXamNuiHudInterpretFrame(uint8_t* frame);
 
 // Registration functions, one per file.
 #define XE_MODULE_EXPORT_GROUP(m, n)                                  \

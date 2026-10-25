@@ -1418,10 +1418,16 @@ struct WaveHand {
 struct GuidePose {
   static constexpr float kHoldMs = 3000.0f;
   static constexpr float kCooldownMs = 1500.0f;
+  // How far each frame moves the smoothed hand and shoulders (0x81AD218C and
+  // 0x81AD2190), which keeps the tracker's jitter out of the pose.
+  static constexpr float kHandSmoothing = 0.1f;
+  static constexpr float kShoulderSmoothing = 0.05f;
   uint32_t tracking_id = 0;
   float held_ms = 0.0f;
   float cooldown_ms = 0.0f;
   bool held_last_frame = false;
+  bool smoothed = false;
+  float hand[3] = {}, shoulder_left[3] = {}, shoulder_right[3] = {};
 };
 
 struct NuiHudState {
@@ -1481,38 +1487,58 @@ bool HandRaised(const SkeletonJoints& joints, uint32_t hand, uint32_t elbow,
   return std::min(turn, 180.0f - turn) < 45.0f;
 }
 
-bool GuidePoseHeld(const SkeletonJoints& joints, const float* up) {
-  for (uint32_t joint : {kJointShoulderLeft, kJointElbowLeft, kJointHandLeft,
-                         kJointShoulderRight}) {
-    if (joints.state(joint) != kSkeletonTracked) {
-      return false;
-    }
+// The left arm, from the smoothed shoulder to the smoothed hand, against the
+// trunk (0x81809FD0); xam needs both shoulders tracked.
+bool GuidePoseHeld(GuidePose& pose, const SkeletonJoints& joints,
+                   const float* up) {
+  if (joints.state(kJointShoulderLeft) != kSkeletonTracked ||
+      joints.state(kJointShoulderRight) != kSkeletonTracked ||
+      !joints.state(kJointHandLeft)) {
+    pose.smoothed = false;
+    return false;
   }
-  float sl[3], el[3], hl[3], sr[3];
-  joints.position(kJointShoulderLeft, sl);
-  joints.position(kJointElbowLeft, el);
-  joints.position(kJointHandLeft, hl);
-  joints.position(kJointShoulderRight, sr);
+  float hand[3], shoulder_left[3], shoulder_right[3];
+  joints.position(kJointHandLeft, hand);
+  joints.position(kJointShoulderLeft, shoulder_left);
+  joints.position(kJointShoulderRight, shoulder_right);
+  for (uint32_t i = 0; i < 3; ++i) {
+    if (!pose.smoothed) {
+      pose.hand[i] = hand[i];
+      pose.shoulder_left[i] = shoulder_left[i];
+      pose.shoulder_right[i] = shoulder_right[i];
+      continue;
+    }
+    pose.hand[i] += (hand[i] - pose.hand[i]) * GuidePose::kHandSmoothing;
+    pose.shoulder_left[i] += (shoulder_left[i] - pose.shoulder_left[i]) *
+                             GuidePose::kShoulderSmoothing;
+    pose.shoulder_right[i] += (shoulder_right[i] - pose.shoulder_right[i]) *
+                              GuidePose::kShoulderSmoothing;
+  }
+  pose.smoothed = true;
   // Towards the player's left, across the shoulders and level with the floor.
-  float out[3] = {sl[0] - sr[0], sl[1] - sr[1], sl[2] - sr[2]};
+  float out[3];
+  for (uint32_t i = 0; i < 3; ++i) {
+    out[i] = pose.shoulder_left[i] - pose.shoulder_right[i];
+  }
   const float out_up = Dot(out, up);
   for (uint32_t i = 0; i < 3; ++i) {
     out[i] -= out_up * up[i];
   }
+  float arm[3];
+  for (uint32_t i = 0; i < 3; ++i) {
+    arm[i] = pose.hand[i] - pose.shoulder_left[i];
+  }
   const float out_length = Length(out);
-  const float arm[3] = {hl[0] - sl[0], hl[1] - sl[1], hl[2] - sl[2]};
-  const float upper[3] = {el[0] - sl[0], el[1] - sl[1], el[2] - sl[2]};
-  const float lower[3] = {hl[0] - el[0], hl[1] - el[1], hl[2] - el[2]};
   const float arm_length = Length(arm);
-  if (out_length == 0.0f || arm_length == 0.0f ||
-      arm_length < 0.85f * (Length(upper) + Length(lower))) {
+  if (out_length == 0.0f || arm_length == 0.0f) {
     return false;
   }
-  // Between 30 and 60 degrees below the shoulder, out to the side rather than
-  // forwards.
+  // 25 to 65 degrees out from hanging down (xam's 205 to 245 degree window
+  // looks like 225, straight down plus 45, give or take 20), out to the side
+  // rather than forwards.
   const float down = -Dot(arm, up) / arm_length;
   const float side = Dot(arm, out) / (out_length * arm_length);
-  return down >= 0.5f && down <= 0.866f && side >= 0.4f;
+  return down >= 0.42f && down <= 0.906f && side >= 0.35f;
 }
 
 void InterpretFrame(NuiHudState& hud, uint8_t* frame, float dt_ms) {
@@ -1526,6 +1552,11 @@ void InterpretFrame(NuiHudState& hud, uint8_t* frame, float dt_ms) {
   X_NUI_PLAYER_ENGAGEMENT_UPDATE engagement;
   UpdatePlayerEngagement(frame, engaged, &engagement);
   UpdateSkeletonScores(frame, hud.scores);
+  // The guide gesture goes by what the tracker saw, before the warnings.
+  uint32_t tracking_states[kSkeletonCount];
+  for (uint32_t i = 0; i < kSkeletonCount; ++i) {
+    tracking_states[i] = GetSkeleton(frame, i)->tracking_state;
+  }
   // Players with a warning reach the title as position only.
   for (const auto& score : hud.scores.players) {
     const uint32_t index = score.skeleton_index;
@@ -1590,15 +1621,17 @@ void InterpretFrame(NuiHudState& hud, uint8_t* frame, float dt_ms) {
     GuidePose& pose = hud.guide[i];
     const auto* skeleton = GetSkeleton(frame, i);
     pose.cooldown_ms = std::max(pose.cooldown_ms - dt_ms, 0.0f);
-    const bool held =
-        cvars::kinect_guide_gesture &&
-        skeleton->tracking_state == kSkeletonTracked &&
-        GuidePoseHeld(
-            SkeletonJoints{reinterpret_cast<const uint8_t*>(skeleton)}, up);
     if (pose.tracking_id != skeleton->tracking_id) {
       pose = GuidePose();
       pose.tracking_id = skeleton->tracking_id;
     }
+    // The system ignores the gesture while its Guide is open.
+    const bool held =
+        cvars::kinect_guide_gesture && !xeXamIsGuideOpen() &&
+        tracking_states[i] == kSkeletonTracked &&
+        GuidePoseHeld(
+            pose, SkeletonJoints{reinterpret_cast<const uint8_t*>(skeleton)},
+            up);
     if (held && pose.cooldown_ms == 0.0f) {
       pose.held_ms += dt_ms;
     } else if (!pose.held_last_frame) {
@@ -1616,16 +1649,17 @@ void InterpretFrame(NuiHudState& hud, uint8_t* frame, float dt_ms) {
       pose.held_ms = 0.0f;
       pose.cooldown_ms = GuidePose::kCooldownMs;
     }
-    XELOGI("Kinect: guide gesture by player {:08X}", guide_player);
-    xeXamShowGuide();
+    const X_RESULT shown = xeXamShowGuide();
+    XELOGI("Kinect: guide gesture by player {:08X}, Guide {}", guide_player,
+           shown == X_ERROR_SUCCESS ? "opened" : "unavailable");
   }
 }
 
 }  // namespace
 
-dword_result_t XamNuiHudInterpretFrame_entry(lpvoid_t skeleton_frame) {
+X_RESULT xeXamNuiHudInterpretFrame(uint8_t* frame) {
   X_RESULT result = X_E_FAIL;
-  if (skeleton_frame && XamNuiHudIsEnabled_entry()) {
+  if (frame && XamNuiHudIsEnabled_entry()) {
     NuiHudState& hud = GetHudState();
     std::lock_guard<std::mutex> lock(hud.mutex);
     const auto now = std::chrono::steady_clock::now();
@@ -1638,7 +1672,7 @@ dword_result_t XamNuiHudInterpretFrame_entry(lpvoid_t skeleton_frame) {
     }
     hud.last_frame = now;
     hud.have_last_frame = true;
-    InterpretFrame(hud, skeleton_frame.as<uint8_t*>(), dt_ms);
+    InterpretFrame(hud, frame, dt_ms);
     result = X_E_SUCCESS;
   }
   // The system has the player's input while its UI is open.
@@ -1646,6 +1680,11 @@ dword_result_t XamNuiHudInterpretFrame_entry(lpvoid_t skeleton_frame) {
     result = 0x8301000B;
   }
   return result;
+}
+
+dword_result_t XamNuiHudInterpretFrame_entry(lpvoid_t skeleton_frame) {
+  return xeXamNuiHudInterpretFrame(
+      skeleton_frame ? skeleton_frame.as<uint8_t*>() : nullptr);
 }
 DECLARE_XAM_EXPORT1(XamNuiHudInterpretFrame, kNone, kImplemented);
 

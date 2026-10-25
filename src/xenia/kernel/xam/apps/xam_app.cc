@@ -15,6 +15,7 @@
 #include "xenia/kernel/kernel_state.h"
 #include "xenia/kernel/nui.h"
 #include "xenia/kernel/xam/xam_content_device.h"
+#include "xenia/kernel/xam/xam_private.h"
 #include "xenia/kernel/xenumerator.h"
 
 /* Notes:
@@ -269,6 +270,16 @@ X_HRESULT XamApp::DispatchMessageSync(uint32_t message, uint32_t buffer_ptr,
           }
         }
         kernel_state_->nui()->SetSkeletonSnapshot(snapshot);
+        // xam's HUD interprets every frame of the current runtime (version
+        // 5), which is where the system sees the guide gesture and who
+        // waves to engage (0x816F9CB8).
+        constexpr uint64_t kRuntimeVersion = 5;
+        const uint64_t version = xe::load_and_swap<uint64_t>(buffer);
+        if (version == kRuntimeVersion) {
+          xeXamNuiHudInterpretFrame(buffer);
+        } else if (snapshot_frame == 1) {
+          XELOGW("XamApp: NUI skeleton frames of runtime version {}", version);
+        }
       }
       if (buffer_ptr && ++frame_count % kLogEveryFrames == 0) {
         uint32_t tracked = 0, position_only = 0;

@@ -9,6 +9,7 @@
 
 #include "xenia/kernel/xam/xam_ui.h"
 
+#include <atomic>
 #include <algorithm>
 
 #include "xenia/app/emulator_window.h"
@@ -1262,19 +1263,26 @@ DECLARE_XAM_EXPORT1(XamShowNuiHardwareRequiredUI, kNone, kImplemented);
 // The Guide is the guide button menu here. Titles hear it's open through
 // XN_SYS_UI, as from xam's own Guide, and the calls return without waiting
 // for it to close.
+static std::atomic<bool> guide_open = false;
+
+bool xeXamIsGuideOpen() { return guide_open; }
+
 X_RESULT xeXamShowGuide() {
   auto show_guide = kernel_state()->emulator()->on_show_guide();
   if (!show_guide) {
     // As xam when it can't load the Guide.
     return X_ERROR_ACCESS_DENIED;
   }
+  guide_open = true;
   kernel_state()->BroadcastNotification(kXNotificationSystemUI, true);
   if (!show_guide([]() {
+        guide_open = false;
         // The menu can outlive the kernel, closed after the emulator stopped.
         if (KernelState* state = kernel_state()) {
           state->BroadcastNotification(kXNotificationSystemUI, false);
         }
       })) {
+    guide_open = false;
     kernel_state()->BroadcastNotification(kXNotificationSystemUI, false);
     return X_ERROR_ACCESS_DENIED;
   }
@@ -1289,10 +1297,12 @@ DECLARE_XAM_EXPORT1(XamShowGuideUI, kUI, kImplemented);
 // engaging the player, then shows the Guide (message 0x21030).
 dword_result_t XamShowNuiGuideUI_entry(dword_t tracking_id, dword_t unk2) {
   auto result = kernel_state()->nui()->NuiHudCheck(tracking_id);
-  if (result) {
-    return result;
+  if (!result) {
+    result = xeXamShowGuide();
   }
-  return xeXamShowGuide();
+  XELOGI("XamShowNuiGuideUI({:08X}, {:08X}): {:08X}", tracking_id.value(),
+         unk2.value(), result);
+  return result;
 }
 DECLARE_XAM_EXPORT1(XamShowNuiGuideUI, kUI, kImplemented);
 
