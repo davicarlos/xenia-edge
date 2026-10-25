@@ -30,6 +30,7 @@
 
 #include "xenia/kernel/xam/ui/create_profile_ui.h"
 #include "xenia/kernel/xam/ui/disc_swap_ui.h"
+#include "xenia/kernel/xam/ui/fitness_body_profile_ui.h"
 #include "xenia/kernel/xam/ui/game_achievements_ui.h"
 #include "xenia/kernel/xam/ui/gamercard_ui.h"
 #include "xenia/kernel/xam/ui/passcode_ui.h"
@@ -1038,6 +1039,43 @@ X_RESULT xeXamShowCreateProfileUIEx(uint32_t user_index, dword_t flag,
   return xeXamDispatchDialogAsync<ui::CreateProfileUI>(
       new ui::CreateProfileUI(imgui_drawer, emulator), close);
 }
+
+// The fitness body profile screen (0x816C5C50, UI 0x2103A) for a signed-in
+// user; 4D53090F opens it from its profile menu.
+dword_result_t XamShowFitnessBodyProfileUI_entry(dword_t unk, dword_t user_index,
+                                                 dword_t unk2) {
+  if (user_index >= XUserMaxUserCount) {
+    return X_E_INVALIDARG;
+  }
+  UserProfile* user = kernel_state()->xam_state()->GetUserProfile(user_index);
+  if (!user) {
+    return X_E_INVALIDARG;
+  }
+  Emulator* emulator = kernel_state()->emulator();
+  xe::ui::ImGuiDrawer* imgui_drawer = emulator->imgui_drawer();
+  if (!imgui_drawer || kernel_state()->xam_state()->IsUIActive()) {
+    return X_ERROR_ACCESS_DENIED;
+  }
+  kernel_state()->xam_state()->is_xam_dialog_present_.store(true);
+  auto close = [](ui::FitnessBodyProfileUI* dialog) -> void {};
+  return xeXamDispatchDialogAsync<ui::FitnessBodyProfileUI>(
+      new ui::FitnessBodyProfileUI(imgui_drawer, emulator->input_system(),
+                                   user->xuid(), user->name()),
+      close);
+}
+DECLARE_XAM_EXPORT1(XamShowFitnessBodyProfileUI, kUI, kImplemented);
+
+// Tells the player their fitness data is shared on Xbox Live (UI 0x2103C);
+// nothing is shared here.
+dword_result_t XamShowFitnessWarnAboutPrivacyUI_entry(dword_t unk,
+                                                      dword_t user_index,
+                                                      dword_t unk2) {
+  if (user_index >= XUserMaxUserCount) {
+    return X_E_INVALIDARG;
+  }
+  return X_ERROR_SUCCESS;
+}
+DECLARE_XAM_EXPORT1(XamShowFitnessWarnAboutPrivacyUI, kUI, kSketchy);
 
 dword_result_t XamShowSigninUI_entry(dword_t users_needed, dword_t flags) {
   return xeXamShowSigninUI(XUserIndexAny, users_needed, flags);
