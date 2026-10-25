@@ -71,6 +71,12 @@ class ImGuiDrawer : public WindowInputListener, public UIDrawer {
   void ClearNotifications();
   void EnableNotifications(bool enable) { are_notifications_enabled_ = enable; }
 
+  // A texture of tightly packed 8-bit RGBA texels, for images a dialog makes
+  // itself. Null without an immediate drawer.
+  std::unique_ptr<ImmediateTexture> CreateRgbaTexture(uint32_t width,
+                                                      uint32_t height,
+                                                      const uint8_t* rgba);
+
   std::unique_ptr<ImmediateTexture> LoadImGuiIcon(
       std::span<const uint8_t> data);
   std::map<uint32_t, std::unique_ptr<ImmediateTexture>> LoadIcons(
