@@ -691,20 +691,19 @@ dword_result_t XamNuiCameraTiltReportStatus_entry(dword_t message,
 }
 DECLARE_XAM_EXPORT1(XamNuiCameraTiltReportStatus, kNone, kImplemented);
 
+// Which tilt motor the sensor has, from UsbdGetNatalHardwareVersion
+// (0x816FA088): 1 for the motor hub of model 1414 (DetroitDeviceRequest), 2
+// for the motor model 1473 drives through its audio firmware
+// (McaDeviceRequest), 0 for none. Xenia drives model 1473's motor, and the
+// simulated tilt without one stands in for it too.
+constexpr uint32_t kTiltControllerNone = 0;
+constexpr uint32_t kTiltControllerAudio = 2;
+
 dword_result_t XamNuiCameraGetTiltControllerType_entry() {
-  /* Notes:
-     - Earlier decompile notes: DetroitDeviceRequest and
-       (LZCOUNT(result) << 0x20) >> 0x25.
-  */
-  // TODO(boma): Get the controller type from connected device.
-  // Currently only reports no controller or type 1.
-  const bool kinect_initialized =
-      kernel_state()->xconfig()->ReadSetting<uint32_t>(
-          X_CONFIG_CATEGORY::XCONFIG_USER_CATEGORY, XCONFIG_USER_RETAIL_FLAGS) &
-      X_RETAIL_FLAGS::KinectInitialized;
-  return kinect_initialized;
+  return kernel_state()->nui()->NuiInitialized() ? kTiltControllerAudio
+                                                 : kTiltControllerNone;
 }
-DECLARE_XAM_EXPORT1(XamNuiCameraGetTiltControllerType, kNone, kStub);
+DECLARE_XAM_EXPORT1(XamNuiCameraGetTiltControllerType, kNone, kImplemented);
 
 // The system's tilt requests (XamApp 0x2B005, 0x2B00A and 0x2B00B), which xam
 // hands to the title's tilt engine (0x816F9CB8 and 0x816FA898) and only with
