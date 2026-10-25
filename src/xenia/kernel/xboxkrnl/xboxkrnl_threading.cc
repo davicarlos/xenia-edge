@@ -2252,6 +2252,13 @@ dword_result_t KeSetTimerEx_entry(pointer_t<X_KTIMER> timer, qword_t due_time,
 }
 DECLARE_XBOXKRNL_EXPORT1(KeSetTimerEx, kThreading, kImplemented);
 
+// KeSetTimerEx without a period.
+dword_result_t KeSetTimer_entry(pointer_t<X_KTIMER> timer, qword_t due_time,
+                                pointer_t<XDPC> dpc) {
+  return KeSetTimerEx_entry(timer, due_time, 0, dpc);
+}
+DECLARE_XBOXKRNL_EXPORT1(KeSetTimer, kThreading, kImplemented);
+
 // Returns whether the timer was set.
 dword_result_t KeCancelTimer_entry(pointer_t<X_KTIMER> timer) {
   const uint32_t was_set = timer->header.inserted;
