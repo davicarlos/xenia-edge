@@ -1268,7 +1268,7 @@ namespace {
 
 constexpr uint32_t kJointElbowLeft = 5;
 constexpr uint32_t kJointElbowRight = 9;
-constexpr uint32_t kJointWristLeft = 6;
+constexpr uint32_t kJointHipCenter = 0;
 
 // The engagement wave (0x8180AAB8, parameters from 0x8180A388): four half
 // waves of a raised hand, each at least three frames the same way and fast
@@ -1426,7 +1426,8 @@ struct GuidePose {
   float cooldown_ms = 0.0f;
   bool held_last_frame = false;
   bool smoothed = false;
-  float hand[3] = {}, shoulder_left[3] = {}, shoulder_right[3] = {};
+  float hand_left[3] = {}, hand_right[3] = {};
+  float shoulder_left[3] = {}, shoulder_right[3] = {};
 };
 
 struct NuiHudState {
@@ -1486,35 +1487,67 @@ bool HandRaised(const SkeletonJoints& joints, uint32_t hand, uint32_t elbow,
   return std::min(turn, 180.0f - turn) < 45.0f;
 }
 
-// The left arm, from the smoothed shoulder to the smoothed hand, against the
-// trunk (0x81809FD0); xam needs both shoulders tracked.
+float AngleDegrees(float y, float x) {
+  return std::atan2(y, x) * (180.0f / 3.14159265f);
+}
+
+// The angle at the elbow between the upper arm and the forearm, 0 when the
+// arm is straight (0x81809820).
+float ElbowBendDegrees(const SkeletonJoints& joints, uint32_t shoulder,
+                       uint32_t elbow, uint32_t hand) {
+  float s[3], e[3], h[3];
+  joints.position(shoulder, s);
+  joints.position(elbow, e);
+  joints.position(hand, h);
+  const float upper[3] = {e[0] - s[0], e[1] - s[1], e[2] - s[2]};
+  const float lower[3] = {h[0] - e[0], h[1] - e[1], h[2] - e[2]};
+  const float lengths = Length(upper) * Length(lower);
+  if (lengths == 0.0f) {
+    return 180.0f;
+  }
+  return std::acos(std::clamp(Dot(upper, lower) / lengths, -1.0f, 1.0f)) *
+         (180.0f / 3.14159265f);
+}
+
+// The guide gesture's pose (0x81809AF0, windows from 0x81809558): the left arm
+// straight and 45 degrees out from hanging down, give or take 20, without
+// reaching forwards; the right arm hanging down; the trunk upright. Hands and
+// shoulders are smoothed (0x81809FD0), and both shoulders must be tracked.
+// With frame flag 4 or 8 the left arm may rise further and the right arm and
+// trunk don't count.
 bool GuidePoseHeld(GuidePose& pose, const SkeletonJoints& joints,
-                   const float* up) {
+                   const float* up, bool relaxed) {
   if (joints.state(kJointShoulderLeft) != kSkeletonTracked ||
       joints.state(kJointShoulderRight) != kSkeletonTracked ||
       !joints.state(kJointHandLeft)) {
     pose.smoothed = false;
     return false;
   }
-  float hand[3], shoulder_left[3], shoulder_right[3];
-  joints.position(kJointHandLeft, hand);
+  float hand_left[3], hand_right[3], shoulder_left[3], shoulder_right[3];
+  joints.position(kJointHandLeft, hand_left);
+  joints.position(kJointHandRight, hand_right);
   joints.position(kJointShoulderLeft, shoulder_left);
   joints.position(kJointShoulderRight, shoulder_right);
   for (uint32_t i = 0; i < 3; ++i) {
     if (!pose.smoothed) {
-      pose.hand[i] = hand[i];
+      pose.hand_left[i] = hand_left[i];
+      pose.hand_right[i] = hand_right[i];
       pose.shoulder_left[i] = shoulder_left[i];
       pose.shoulder_right[i] = shoulder_right[i];
       continue;
     }
-    pose.hand[i] += (hand[i] - pose.hand[i]) * GuidePose::kHandSmoothing;
+    pose.hand_left[i] +=
+        (hand_left[i] - pose.hand_left[i]) * GuidePose::kHandSmoothing;
+    pose.hand_right[i] +=
+        (hand_right[i] - pose.hand_right[i]) * GuidePose::kHandSmoothing;
     pose.shoulder_left[i] += (shoulder_left[i] - pose.shoulder_left[i]) *
                              GuidePose::kShoulderSmoothing;
     pose.shoulder_right[i] += (shoulder_right[i] - pose.shoulder_right[i]) *
                               GuidePose::kShoulderSmoothing;
   }
   pose.smoothed = true;
-  // Towards the player's left, across the shoulders and level with the floor.
+  // The body: up from the floor, out towards the player's left across the
+  // shoulders, and forwards.
   float out[3];
   for (uint32_t i = 0; i < 3; ++i) {
     out[i] = pose.shoulder_left[i] - pose.shoulder_right[i];
@@ -1523,21 +1556,60 @@ bool GuidePoseHeld(GuidePose& pose, const SkeletonJoints& joints,
   for (uint32_t i = 0; i < 3; ++i) {
     out[i] -= out_up * up[i];
   }
-  float arm[3];
-  for (uint32_t i = 0; i < 3; ++i) {
-    arm[i] = pose.hand[i] - pose.shoulder_left[i];
-  }
   const float out_length = Length(out);
-  const float arm_length = Length(arm);
-  if (out_length == 0.0f || arm_length == 0.0f) {
+  if (out_length == 0.0f) {
     return false;
   }
-  // 25 to 65 degrees out from hanging down (xam's 205 to 245 degree window
-  // looks like 225, straight down plus 45, give or take 20), out to the side
-  // rather than forwards.
-  const float down = -Dot(arm, up) / arm_length;
-  const float side = Dot(arm, out) / (out_length * arm_length);
-  return down >= 0.42f && down <= 0.906f && side >= 0.35f;
+  for (float& v : out) {
+    v /= out_length;
+  }
+  const float forward[3] = {up[1] * out[2] - up[2] * out[1],
+                            up[2] * out[0] - up[0] * out[2],
+                            up[0] * out[1] - up[1] * out[0]};
+  // An arm's angle out to its side from hanging down, and forwards or back.
+  auto arm_angles = [&](const float* shoulder, const float* hand, float side,
+                        float& sideways, float& forwards) {
+    const float arm[3] = {hand[0] - shoulder[0], hand[1] - shoulder[1],
+                          hand[2] - shoulder[2]};
+    const float down = -Dot(arm, up);
+    sideways = AngleDegrees(side * Dot(arm, out), down);
+    forwards = AngleDegrees(Dot(arm, forward), down);
+  };
+  float left_out, left_forward;
+  arm_angles(pose.shoulder_left, pose.hand_left, 1.0f, left_out, left_forward);
+  // xam: 205 to 245 (275) degrees across, 250 (245) to 290 (295) along, the
+  // elbow bent under 35 (40) degrees; hanging down is 180 and 270.
+  const float left_bend = ElbowBendDegrees(joints, kJointShoulderLeft,
+                                           kJointElbowLeft, kJointHandLeft);
+  const bool left =
+      relaxed ? left_out > 25.0f && left_out < 95.0f &&
+                    std::abs(left_forward) < 25.0f && left_bend < 40.0f
+              : left_out > 25.0f && left_out < 65.0f &&
+                    std::abs(left_forward) < 20.0f && left_bend < 35.0f;
+  // The right arm within 20 degrees of hanging down and bent under 110,
+  // unless its hand isn't tracked.
+  bool right = true;
+  if (joints.state(kJointHandRight) && (!relaxed ||
+      joints.state(kJointHandRight) == kSkeletonTracked)) {
+    float right_out, right_forward;
+    arm_angles(pose.shoulder_right, pose.hand_right, -1.0f, right_out,
+               right_forward);
+    right = std::abs(right_out) < 20.0f &&
+            ElbowBendDegrees(joints, kJointShoulderRight, kJointElbowRight,
+                             kJointHandRight) < 110.0f;
+  }
+  // The trunk, from the hips to the shoulders across the body's side view,
+  // within 9 degrees of upright.
+  bool trunk = true;
+  if (!relaxed) {
+    float hips[3], shoulders[3];
+    joints.position(kJointHipCenter, hips);
+    joints.position(kJointShoulderCenter, shoulders);
+    const float spine[3] = {shoulders[0] - hips[0], shoulders[1] - hips[1],
+                            shoulders[2] - hips[2]};
+    trunk = std::abs(AngleDegrees(Dot(spine, forward), Dot(spine, up))) < 9.0f;
+  }
+  return left && right && trunk;
 }
 
 void InterpretFrame(NuiHudState& hud, uint8_t* frame, float dt_ms) {
@@ -1614,6 +1686,9 @@ void InterpretFrame(NuiHudState& hud, uint8_t* frame, float dt_ms) {
   }
   hud.interpreted = true;
   // The guide gesture.
+  constexpr uint32_t kSkeletonFrameFlags = 0xAB8;
+  const bool relaxed_pose =
+      xe::load_and_swap<uint32_t>(frame + kSkeletonFrameFlags) & (4 | 8);
   bool open_guide = false;
   uint32_t guide_player = 0;
   for (uint32_t i = 0; i < kSkeletonCount; ++i) {
@@ -1630,7 +1705,7 @@ void InterpretFrame(NuiHudState& hud, uint8_t* frame, float dt_ms) {
         tracking_states[i] == kSkeletonTracked &&
         GuidePoseHeld(
             pose, SkeletonJoints{reinterpret_cast<const uint8_t*>(skeleton)},
-            up);
+            up, relaxed_pose);
     if (held && pose.cooldown_ms == 0.0f) {
       pose.held_ms += dt_ms;
     } else if (!pose.held_last_frame) {
