@@ -675,7 +675,7 @@ endif()
 target_include_directories(zlib-ng PUBLIC zlib-ng)
 
 # ==============================================================================
-# libusb (Windows only)
+# libusb (Windows and Linux)
 # ==============================================================================
 if(WIN32)
   add_library(libusb STATIC
@@ -697,6 +697,28 @@ if(WIN32)
     libusb/libusb/os/windows_winusb.h
   )
   target_include_directories(libusb PUBLIC libusb/libusb PRIVATE libusb/msvc)
+elseif(UNIX AND NOT APPLE)
+  # usbfs with netlink hotplug, so that libudev isn't needed. libusb-config
+  # holds the config.h that autoconf would generate.
+  add_library(libusb STATIC
+    libusb/libusb/core.c
+    libusb/libusb/descriptor.c
+    libusb/libusb/hotplug.c
+    libusb/libusb/io.c
+    libusb/libusb/strerror.c
+    libusb/libusb/sync.c
+    libusb/libusb/os/events_posix.c
+    libusb/libusb/os/events_posix.h
+    libusb/libusb/os/threads_posix.c
+    libusb/libusb/os/threads_posix.h
+    libusb/libusb/os/linux_usbfs.c
+    libusb/libusb/os/linux_usbfs.h
+    libusb/libusb/os/linux_netlink.c
+  )
+  target_include_directories(libusb PUBLIC libusb/libusb PRIVATE libusb-config/linux)
+  target_compile_options(libusb PRIVATE -w)
+  find_package(Threads REQUIRED)
+  target_link_libraries(libusb PRIVATE Threads::Threads)
 endif()
 
 # ==============================================================================
