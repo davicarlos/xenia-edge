@@ -918,6 +918,24 @@ void EmulatorWindow::OnEmulatorInitialized() {
   emulator_->set_on_exit_to_dashboard(
       [this]() { return StopTitleAndReturnToList(); });
 
+  emulator_->set_on_show_guide([this](std::function<void()> on_closed) {
+    app_context_.CallInUIThread([this, on_closed]() {
+      // The menu may be open already, from the guide button.
+      if (!context_menu_) {
+        ToggleContextMenu(false);
+      }
+      if (!context_menu_) {
+        on_closed();
+        return;
+      }
+      context_menu_->SetOnCloseCallback([this, on_closed]() {
+        context_menu_ = nullptr;
+        on_closed();
+      });
+    });
+    return true;
+  });
+
   // Register callback for disc swap to update title bar
   emulator_->set_on_disc_swap([this](uint8_t) {
     app_context_.CallInUIThread([this]() { UpdateTitle(); });

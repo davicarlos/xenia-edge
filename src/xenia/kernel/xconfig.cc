@@ -67,6 +67,25 @@ DEFINE_bool(allow_nui_initialization, false,
             " require avatar implementation.",
             "Console");
 
+DEFINE_bool(kinect_disabled, false,
+            "Switch the Kinect off, as the console's Kinect settings do "
+            "(XamNuiSetForceDeviceOff).",
+            "Console");
+
+DEFINE_bool(kinect_chat_microphone, true,
+            "Use the Kinect's microphones for voice chat (XamNuiEnableChatMic).",
+            "Console");
+
+DEFINE_int32(kinect_elevation, 0,
+             "The Kinect's tilt in degrees as the Kinect Tuner left it, which "
+             "titles go to when kinect_elevation_calibrated is set.",
+             "Console");
+
+DEFINE_bool(kinect_elevation_calibrated, false,
+            "Whether the Kinect Tuner has set kinect_elevation; titles look "
+            "for the floor themselves until then.",
+            "Console");
+
 DEFINE_int32(xmp_default_volume, 70,
              "Default music volume if game doesn't set it [0-100].", "Console");
 
@@ -81,6 +100,10 @@ namespace kernel {
 namespace {
 
 constexpr uint16_t kMaxSettingSize = 0x40;
+// XCONFIG_CONSOLE_NUI, as xam reads it (ExGetXConfigSetting(7, 9)).
+constexpr uint16_t kConsoleNuiBytes = 0x1C;
+constexpr uint32_t kConsoleNuiCalibrated = 0x2;
+constexpr uint32_t kConsoleNuiChatMicOff = 0x8;
 
 // Fills |out| (>= kMaxSettingSize bytes) with the guest-formatted bytes of the
 // requested setting and returns its size, or 0 if the setting is unhandled.
@@ -137,7 +160,9 @@ uint16_t BuildSetting(X_CONFIG_CATEGORY category, uint16_t setting,
               out, X_RETAIL_FLAGS::DashboardInitialized |
                        (cvars::allow_nui_initialization
                             ? X_RETAIL_FLAGS::KinectInitialized
-                            : 0));
+                            : 0) |
+                       (cvars::kinect_disabled ? X_RETAIL_FLAGS::KinectDisabled
+                                               : 0));
           return 4;
         case XCONFIG_USER_COUNTRY:
           out[0] = static_cast<uint8_t>(cvars::user_country);
@@ -237,6 +262,20 @@ uint16_t BuildSetting(X_CONFIG_CATEGORY category, uint16_t setting,
         case XCONFIG_CONSOLE_KEYBOARD_LAYOUT:
           xe::store_and_swap<int16_t>(out, X_KEYBOARD_LAYOUT::KeyboardDefault);
           return 2;
+        case XCONFIG_CONSOLE_NUI: {
+          // 0x1C bytes: flags (0x2 the tilt is calibrated, 0x8 the chat
+          // microphone is off), the sensor's height (1800 by default) and the
+          // calibrated tilt in degrees.
+          std::memset(out, 0, kConsoleNuiBytes);
+          const uint32_t flags =
+              (cvars::kinect_elevation_calibrated ? kConsoleNuiCalibrated
+                                                  : 0) |
+              (cvars::kinect_chat_microphone ? 0 : kConsoleNuiChatMicOff);
+          xe::store_and_swap<uint32_t>(out, flags);
+          xe::store_and_swap<float>(out + 4, 1800.0f);
+          xe::store_and_swap<int32_t>(out + 8, cvars::kinect_elevation);
+          return kConsoleNuiBytes;
+        }
       }
       break;
     default:
@@ -274,6 +313,22 @@ uint16_t XConfig::GetSettingSize(const X_CONFIG_CATEGORY category,
 void XConfig::WriteSetting(const X_CONFIG_CATEGORY category,
                            const uint16_t setting_id, const void* buffer) {
   switch (category) {
+    case XCONFIG_CONSOLE_CATEGORY:
+      if (setting_id == XCONFIG_CONSOLE_NUI) {
+        const auto* bytes = static_cast<const uint8_t*>(buffer);
+        const uint32_t flags = xe::load_and_swap<uint32_t>(bytes);
+        StoreConsoleSetting<bool>(cvars::kinect_elevation_calibrated,
+                                  "kinect_elevation_calibrated",
+                                  (flags & kConsoleNuiCalibrated) != 0);
+        StoreConsoleSetting<bool>(cvars::kinect_chat_microphone,
+                                  "kinect_chat_microphone",
+                                  !(flags & kConsoleNuiChatMicOff));
+        StoreConsoleSetting<int32_t>(cvars::kinect_elevation,
+                                     "kinect_elevation",
+                                     xe::load_and_swap<int32_t>(bytes + 8));
+        return;
+      }
+      break;
     case XCONFIG_SECURED_CATEGORY:
       switch (setting_id) {
         case XCONFIG_SECURED_AV_REGION: {
@@ -329,12 +384,16 @@ void XConfig::WriteSetting(const X_CONFIG_CATEGORY category,
               cvars::user_country, "user_country",
               static_cast<int32_t>(*reinterpret_cast<const uint8_t*>(buffer)));
           return;
-        case XCONFIG_USER_RETAIL_FLAGS:
-          StoreConsoleSetting<bool>(cvars::allow_nui_initialization,
-                                    "allow_nui_initialization",
-                                    (xe::load_and_swap<uint32_t>(buffer) &
-                                     X_RETAIL_FLAGS::KinectInitialized) != 0);
+        case XCONFIG_USER_RETAIL_FLAGS: {
+          const uint32_t flags = xe::load_and_swap<uint32_t>(buffer);
+          StoreConsoleSetting<bool>(
+              cvars::allow_nui_initialization, "allow_nui_initialization",
+              (flags & X_RETAIL_FLAGS::KinectInitialized) != 0);
+          StoreConsoleSetting<bool>(
+              cvars::kinect_disabled, "kinect_disabled",
+              (flags & X_RETAIL_FLAGS::KinectDisabled) != 0);
           return;
+        }
         case XCONFIG_USER_MUSIC_VOLUME: {
           const float volume = xe::load_and_swap<float>(buffer);
           StoreConsoleSetting<int32_t>(

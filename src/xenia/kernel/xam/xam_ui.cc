@@ -9,6 +9,7 @@
 
 #include "xenia/kernel/xam/xam_ui.h"
 
+#include <atomic>
 #include <algorithm>
 
 #include "xenia/app/emulator_window.h"
@@ -1260,21 +1261,49 @@ dword_result_t XamShowNuiHardwareRequiredUI_entry(unknown_t unk1) {
 }
 DECLARE_XAM_EXPORT1(XamShowNuiHardwareRequiredUI, kNone, kImplemented);
 
-dword_result_t XamShowNuiGuideUI_entry(unknown_t tracking_id, unknown_t unk2) {
-  auto result = kernel_state()->nui()->NuiHudCheck(tracking_id);
-  if (result) {
-    return result;
-  }
-  /* Notes:
-   - calls xeXamNuiHudCheck, if success call XamAppRequestLoadEx(4) and if
-   succeed call XMsgSystemProcessCall and some sub function that ensures correct
-   h_result is returned
-   - if XamAppRequestLoadEx(4) fails return X_ERROR_ACCESS_DENIED
-  */
+// The Guide, as the guide button menu. xam shows it and returns without
+// waiting, with XN_SYS_UI while it's open.
+static std::atomic<bool> guide_open = false;
 
-  return X_ERROR_ACCESS_DENIED;
+bool xeXamIsGuideOpen() { return guide_open; }
+
+X_RESULT xeXamShowGuide() {
+  auto show_guide = kernel_state()->emulator()->on_show_guide();
+  if (!show_guide || guide_open.exchange(true)) {
+    // As xam when it can't load the Guide.
+    return X_ERROR_ACCESS_DENIED;
+  }
+  kernel_state()->BroadcastNotification(kXNotificationSystemUI, true);
+  if (!show_guide([]() {
+        guide_open = false;
+        // The menu can outlive the kernel, closed after the emulator stopped.
+        if (KernelState* state = kernel_state()) {
+          state->BroadcastNotification(kXNotificationSystemUI, false);
+        }
+      })) {
+    guide_open = false;
+    kernel_state()->BroadcastNotification(kXNotificationSystemUI, false);
+    return X_ERROR_ACCESS_DENIED;
+  }
+  return X_ERROR_SUCCESS;
 }
-DECLARE_XAM_EXPORT1(XamShowNuiGuideUI, kNone, kStub);
+
+dword_result_t XamShowGuideUI_entry(dword_t user_index) {
+  return xeXamShowGuide();
+}
+DECLARE_XAM_EXPORT1(XamShowGuideUI, kUI, kImplemented);
+
+// The Kinect Guide (0x816C3590): xam checks the HUD, engaging the player,
+// then shows the Guide (message 0x21030). 4D5308C9 opens it from its pause
+// menu.
+dword_result_t XamShowNuiGuideUI_entry(dword_t tracking_id, dword_t unk2) {
+  X_RESULT result = kernel_state()->nui()->NuiHudCheck(tracking_id);
+  if (!result) {
+    result = xeXamShowGuide();
+  }
+  return result;
+}
+DECLARE_XAM_EXPORT1(XamShowNuiGuideUI, kUI, kImplemented);
 
 }  // namespace xam
 }  // namespace kernel

@@ -480,6 +480,16 @@ class Emulator {
     on_exit_to_dashboard_ = std::move(callback);
   }
 
+  // Called when a title opens the Guide (XamShowGuideUI, XamShowNuiGuideUI,
+  // the Kinect Guide gesture): shows the guide button menu and calls
+  // on_closed once it closes. Returns false when there's no menu to show.
+  using ShowGuideCallback =
+      std::function<bool(std::function<void()> on_closed)>;
+  ShowGuideCallback on_show_guide() const { return on_show_guide_; }
+  void set_on_show_guide(ShowGuideCallback callback) {
+    on_show_guide_ = std::move(callback);
+  }
+
   // Called when XamSwapDisc successfully swaps to a new disc.
   // Parameters: new_disc_number
   using DiscSwapCallback = std::function<void(uint8_t)>;
@@ -582,6 +592,7 @@ class Emulator {
 
   LaunchNewTitleCallback on_launch_new_title_;
   ExitToDashboardCallback on_exit_to_dashboard_;
+  ShowGuideCallback on_show_guide_;
   DiscSwapCallback on_disc_swap_;
 };
 
