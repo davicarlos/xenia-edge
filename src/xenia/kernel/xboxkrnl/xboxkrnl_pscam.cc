@@ -26,6 +26,7 @@
 #include <mutex>
 #include <vector>
 
+#include "xenia/base/clock.h"
 #include "xenia/base/cvar.h"
 #include "xenia/base/logging.h"
 #include "xenia/base/string.h"
@@ -127,13 +128,24 @@ struct X_PSCAM_READ_REQUEST {
   xe::be<uint32_t> buffer_ptr;
   xe::be<uint32_t> buffer_size;
   xe::be<uint32_t> unknown_24;
-  // Gets the frame's sequence number.
-  xe::be<uint32_t> frame_counter_ptr;
+  // Gets an X_PSCAM_FRAME_INFO.
+  xe::be<uint32_t> frame_info_ptr;
   // Color frames: the generation of the settings they were taken with.
   uint8_t settings_generation;
   uint8_t unknown_2D[3];
 };
 static_assert_size(X_PSCAM_READ_REQUEST, 0x30);
+
+// What a read tells about its frame. The title's runtime stamps its image and
+// skeleton frames with the time (4D53090F at 0x82F4B0C0), and 4D53090F feeds
+// its Kinect menu only skeleton frames with a time other than 0 and -1 that
+// changed (0x8294AA5C), taking it for milliseconds.
+struct X_PSCAM_FRAME_INFO {
+  xe::be<uint32_t> sequence;
+  xe::be<uint32_t> unknown_04;
+  xe::be<uint64_t> time_ms;
+};
+static_assert_size(X_PSCAM_FRAME_INFO, 0x10);
 
 // The color camera settings the title's NUI runtime keeps, in two sets: while
 // playing, and while Kinect ID captures faces. 16.16 fixed point.
@@ -435,9 +447,9 @@ class CameraService {
   X_STATUS QueueRead(uint32_t request_ptr, uint32_t routine) {
     auto read = Guest<X_PSCAM_READ_REQUEST>(request_ptr);
     const uint32_t stream = read->stream;
-    const uint32_t counter_ptr = read->frame_counter_ptr;
+    const uint32_t info_ptr = read->frame_info_ptr;
     if (!routine || (stream != kStreamDepth && stream != kStreamColor) ||
-        (counter_ptr && !IsGuestRange(counter_ptr, sizeof(uint32_t)))) {
+        (info_ptr && !IsGuestRange(info_ptr, sizeof(X_PSCAM_FRAME_INFO)))) {
       return X_STATUS_INVALID_PARAMETER;
     }
     Completion completion;
@@ -625,8 +637,10 @@ class CameraService {
       std::memcpy(Guest<uint8_t>(buffer), frame_.data(), bytes);
       request->settings_generation = settings_generation_;
     }
-    if (const uint32_t counter_ptr = request->frame_counter_ptr) {
-      *Guest<xe::be<uint32_t>>(counter_ptr) = sequence;
+    if (const uint32_t info_ptr = request->frame_info_ptr) {
+      auto info = Guest<X_PSCAM_FRAME_INFO>(info_ptr);
+      info->sequence = sequence;
+      info->time_ms = Clock::QueryGuestUptimeMillis();
     }
     if (!(depth ? logged_depth_ : logged_color_)) {
       (depth ? logged_depth_ : logged_color_) = true;
