@@ -351,7 +351,29 @@ void AudioSystem::SubmitFrame(size_t index, float* samples) {
   }
   clients_[index].frames_submitted++;
   clients_[index].frames_processed++;
+  std::memcpy(clients_[index].last_frame.data(), samples,
+              AudioDriver::kFrameSizeMax);
+  clients_[index].has_last_frame = true;
   (clients_[index].driver)->SubmitFrame(samples);
+}
+
+void AudioSystem::CaptureLastFrame(uint8_t* out) {
+  std::array<float, AudioDriver::kFrameSamplesMax> mix = {};
+  {
+    std::lock_guard<std::mutex> clients_lock(clients_mutex_);
+    for (const ClientSlot& client : clients_) {
+      if (!client.in_use || !client.has_last_frame) {
+        continue;
+      }
+      for (uint32_t i = 0; i < AudioDriver::kFrameSamplesMax; ++i) {
+        mix[i] += xe::load_and_swap<float>(client.last_frame.data() +
+                                           i * sizeof(float));
+      }
+    }
+  }
+  for (uint32_t i = 0; i < AudioDriver::kFrameSamplesMax; ++i) {
+    xe::store_and_swap<float>(out + i * sizeof(float), mix[i]);
+  }
 }
 
 bool AudioSystem::GetClientPerformance(size_t index,
