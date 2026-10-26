@@ -97,6 +97,8 @@ std::vector<uint8_t> ReadAudioFirmware(const std::filesystem::path& path) {
 }  // namespace
 
 KinectDevice::KinectDevice() {
+  // A recording replaces the whole sensor, so it needs no hardware and no
+  // allow_kinect_camera; it has no microphones or motor.
   auto on_frame = [this]() { OnFrame(); };
   if (!cvars::kinect_replay_path.empty()) {
     camera_ = hid::kinect::UsbCamera::OpenRecording(cvars::kinect_replay_path,
@@ -123,6 +125,8 @@ KinectDevice::KinectDevice() {
       hid::kinect::LoadAudioFirmware(image);
     }
   }
+  // The console's own measurement of its microphone array, for the
+  // firmware's array processing. Optional.
   audio_ = hid::kinect::UsbAudio::Open();
   if (audio_ && !cvars::kinect_audio_calibration_path.empty()) {
     SendAudioCalibration();
@@ -181,6 +185,8 @@ bool KinectDevice::SendAudioCalibration() {
   if (!audio_ || cvars::kinect_audio_calibration_path.empty()) {
     return false;
   }
+  // One byte more than a calibration is read, so a larger file is refused
+  // rather than cut short.
   std::vector<uint8_t> message;
   if (FILE* file = xe::filesystem::OpenFile(
           cvars::kinect_audio_calibration_path, "rb")) {
@@ -221,6 +227,7 @@ bool KinectDevice::ReadMicrophoneWindow(
 }
 
 const std::string& KinectDevice::serial_number() {
+  // Read once: it takes control transfers.
   std::call_once(serial_once_, [this]() {
     if (camera_ && !is_recording_) {
       serial_number_ = hid::kinect::ReadSerialNumber();

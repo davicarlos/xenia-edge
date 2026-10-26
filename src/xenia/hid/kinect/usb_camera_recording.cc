@@ -8,6 +8,17 @@
  */
 
 // Kinect recordings: writing them, and playing one back as a camera.
+//
+// A recording is a directory:
+// - calibration.bin: "XKCAL001", the 116 bytes of registration the camera
+//   reports, then dcmos_emitter_distance, dcmos_rcmos_distance,
+//   reference_distance and reference_pixel_size (host floats) and const_shift
+//   (host uint16), all that PsCam codes 14 and 24 are built from;
+// - depth_NNNNN.bin: a depth frame as the camera sends it, 11 bits per pixel
+//   packed (kDepthFrameBytes);
+// - color_NNNNN.bin: the color frame taken with it, Bayer (kColorFrameBytes).
+//   Optional: a recording made before the first color frame plays black.
+// Frames are numbered from 0 without gaps.
 
 #include <atomic>
 #include <chrono>
@@ -30,6 +41,7 @@ namespace kinect {
 namespace {
 
 constexpr char kCalibrationMagic[8] = {'X', 'K', 'C', 'A', 'L', '0', '0', '1'};
+// The camera's 30 frames per second.
 constexpr auto kFramePeriod = std::chrono::microseconds(33333);
 
 std::filesystem::path FramePath(const std::filesystem::path& directory,
@@ -60,6 +72,8 @@ bool ReadFile(const std::filesystem::path& path, std::vector<uint8_t>& out,
   return ok;
 }
 
+// Plays the frames in order at 30 per second, over and over, as a camera would
+// deliver them.
 class RecordingCamera : public UsbCamera {
  public:
   ~RecordingCamera() override {
@@ -92,6 +106,7 @@ class RecordingCamera : public UsbCamera {
     std::memcpy(&calibration_.reference_distance, in + 8, 4);
     std::memcpy(&calibration_.reference_pixel_size, in + 12, 4);
     std::memcpy(&calibration_.const_shift, in + 16, 2);
+    // The frames run up to the first number missing.
     while (std::filesystem::exists(FramePath(directory, "depth", frame_count_))) {
       ++frame_count_;
     }
@@ -148,6 +163,8 @@ class RecordingCamera : public UsbCamera {
                     kColorFrameBytes)) {
         color.assign(kColorFrameBytes, 0);
       }
+      // A frame becomes the newest one only with its depth, which titles
+      // can't do without.
       if (depth_ok) {
         std::lock_guard<xe_mutex> lock(mutex_);
         depth_.swap(depth);
@@ -157,6 +174,8 @@ class RecordingCamera : public UsbCamera {
       if (on_frame_) {
         on_frame_();
       }
+      // Back to the start after the last frame; on a fixed schedule, so slow
+      // file reads don't stretch the recording.
       index = (index + 1) % frame_count_;
       next += kFramePeriod;
       std::this_thread::sleep_until(next);

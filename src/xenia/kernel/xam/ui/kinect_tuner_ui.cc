@@ -178,6 +178,8 @@ KinectTunerUI::KinectTunerUI(xe::ui::ImGuiDrawer* imgui_drawer,
     : XamGamepadDialog(imgui_drawer, input_system),
       elevation_(kernel_state()->nui()->GetElevationAngle()) {}
 
+// Rebuilds the two previews from the newest frames, at half resolution: the
+// depth colored by distance band, the color from the raw Bayer image.
 void KinectTunerUI::Refresh() {
   camera_present_ = xboxkrnl::CopyKinectCameraPreview(
       depth_sequence_, packed_depth_, color_sequence_, bayer_);

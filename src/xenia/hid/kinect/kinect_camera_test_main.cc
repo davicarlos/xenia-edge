@@ -39,7 +39,7 @@ DEFINE_path(record_dir, "",
 DEFINE_path(depth_pgm, "",
             "With record_dir: instead of streaming, write a one-frame "
             "recording from this 16-bit PGM of raw disparities, as "
-            "kinect_dump_depth_path or dump_prefix write them, with the "
+            "dump_prefix writes them, with the "
             "connected camera's calibration.",
             "Kinect");
 DEFINE_path(audio_firmware, "",

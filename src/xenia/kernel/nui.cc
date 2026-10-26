@@ -38,6 +38,8 @@ NUIController::~NUIController() {
   device_.reset();
 }
 
+// Opened on first use rather than at start, so that titles without Kinect
+// support leave the sensor to the host.
 kinect::KinectDevice* NUIController::device() {
   std::call_once(device_once_, [this]() {
     device_ = std::make_unique<kinect::KinectDevice>();
@@ -52,6 +54,7 @@ kinect::KinectAudio* NUIController::audio() {
   return audio_.get();
 }
 
+// The retail flags in the user settings (XCONFIG_USER_RETAIL_FLAGS).
 bool NUIController::NuiInitialized() {
   const uint32_t flags =
       KernelState::shared()->xconfig()->ReadSetting<uint32_t>(
@@ -89,6 +92,7 @@ void NUIController::ShutdownTitle() {
 }
 
 uint32_t NUIController::NuiHudCheck(uint32_t tracking_id) {
+  // A tracking ID of 0 keeps whoever is engaged.
   if (!IsDeviceReady()) {
     return X_ERROR_ACCESS_DENIED;
   }
@@ -110,6 +114,8 @@ void NUIController::SetUserEnrollment(uint32_t user_index,
   }
 }
 
+// Kinect ID matches a skeleton to an enrollment; this is how xam turns that
+// into the signed-in user it belongs to.
 uint32_t NUIController::FindEnrolledUser(uint32_t enrollment_index) const {
   if (enrollment_index == kNoEnrollment) {
     return kUserCount;
@@ -140,6 +146,7 @@ bool NUIController::HasCachedBiometricData(uint64_t xuid) {
 }
 
 uint64_t NUIController::GetSessionId() {
+  // Fixed for the emulator's run; never 0.
   std::call_once(session_once_, [this]() {
     std::random_device random;
     do {
@@ -174,6 +181,7 @@ void NUIController::SetRememberedFloor(const std::array<float, 4>& plane) {
 }
 
 namespace {
+// One file for every title, in the storage root.
 std::filesystem::path DepthCalibrationPath() {
   return KernelState::shared()->emulator()->storage_root() /
          "kinect_depth_calibration.bin";

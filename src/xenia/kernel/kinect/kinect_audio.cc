@@ -136,6 +136,8 @@ void KinectAudio::EnsureThread() {
   thread_->Create();
 }
 
+// Keeps the tic on a fixed schedule of 5.33 ms, as the console's audio
+// render driver does.
 void KinectAudio::ThreadMain() {
   auto deadline = std::chrono::steady_clock::now();
   while (running_) {
@@ -153,6 +155,8 @@ void KinectAudio::ThreadMain() {
   }
 }
 
+// One tic: every third completes the oldest window request, then the echo
+// cancellation client runs, on this thread as on the console's driver thread.
 void KinectAudio::Tick() {
   const uint16_t tic = render_tic_ + 1;
   render_tic_ = tic;
@@ -188,6 +192,8 @@ void KinectAudio::CompleteRequest(const Request& request, uint16_t tic) {
     std::lock_guard<std::mutex> lock(mutex_);
     have_window = device_->ReadMicrophoneWindow(next_window_, window);
   }
+  // A request is due every third tic, whether the sensor sent a window or
+  // not; without one it gets silence.
   if (!have_window) {
     std::memset(&window, 0, sizeof(window));
   }

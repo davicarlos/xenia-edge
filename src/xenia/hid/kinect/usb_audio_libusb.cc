@@ -111,6 +111,9 @@ libusb_device_handle* OpenAudioDevice(libusb_context* context,
   return handle;
 }
 
+// The audio device's ROM bootloader, which is all it runs after power-up: it
+// takes commands on endpoint 0x01 (a header, then the data in 512-byte
+// packets) and answers each on 0x81.
 class Bootloader {
  public:
   explicit Bootloader(libusb_device_handle* handle) : handle_(handle) {}
@@ -179,6 +182,8 @@ class Bootloader {
   uint32_t tag_ = 1;
 };
 
+// Writes the firmware into the device's memory and starts it (bootloader
+// commands 3 and 4). The firmware is lost when the sensor loses power.
 bool Upload(libusb_device_handle* handle, const std::vector<uint8_t>& image) {
   FirmwareHeader header;
   if (image.size() < sizeof(header)) {
@@ -282,6 +287,7 @@ class UsbAudioLibusb : public UsbAudio {
     if (!handle_) {
       return false;
     }
+    // The bootloader has one interface; the firmware adds the audio ones.
     if (interfaces < 2) {
       XELOGW("Kinect: the audio firmware isn't running; no motor or LED");
       return false;
@@ -582,6 +588,7 @@ class UsbAudioLibusb : public UsbAudio {
     }
   }
 
+  // libusb completes the isochronous transfers from here.
   void EventLoop() {
     timeval timeout = {0, kEventTimeoutUs};
     while (events_running_) {
@@ -590,6 +597,8 @@ class UsbAudioLibusb : public UsbAudio {
   }
 
  public:
+  // With the speaker stream the sensor expects beside them (see
+  // FillSpeakerPackets).
   bool StartMicrophones(std::function<void()> on_window) override {
     if (microphones_started_) {
       return true;
@@ -652,6 +661,8 @@ class UsbAudioLibusb : public UsbAudio {
     microphones_started_ = false;
   }
 
+  // The last kQueuedWindows windows are kept; a reader that fell further
+  // behind skips to the oldest.
   bool ReadMicrophoneWindow(uint64_t& next,
                             MicrophoneWindow& window) override {
     std::lock_guard<std::mutex> lock(windows_mutex_);
