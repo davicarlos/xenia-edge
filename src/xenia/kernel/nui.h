@@ -143,9 +143,19 @@ class NUIController {
   // Moves the motor; false without one.
   bool SetElevationAngle(int32_t degrees);
   bool StopElevation();
-  // The floor plane the title found last (XamNuiCameraRememberFloor).
-  std::array<float, 4> GetRememberedFloor() const;
-  void SetRememberedFloor(const std::array<float, 4>& plane);
+  // The floor plane the title found last (XamNuiCameraRememberFloor), with
+  // the direction of gravity when it did; XamNuiCameraTiltGetStatus hands
+  // both back. A motor event forgets them and marks the floor invalid until
+  // a title remembers one with reset set.
+  struct RememberedFloor {
+    std::array<float, 4> plane = {};
+    std::array<float, 3> gravity = {};
+    bool invalid = false;
+  };
+  RememberedFloor GetRememberedFloor() const;
+  void SetRememberedFloor(const std::array<float, 4>& plane,
+                          const std::array<float, 3>& gravity, bool reset);
+  void ForgetFloor();
   // Flags titles set on the tilt controller (XamNuiCameraSetFlags).
   uint32_t GetCameraFlags() const { return camera_flags_; }
   void SetCameraFlags(uint32_t flags) { camera_flags_ = flags; }
@@ -192,7 +202,7 @@ class NUIController {
   std::atomic<int32_t> elevation_angle_ = 0;
   std::atomic<uint32_t> camera_flags_ = 0;
   mutable std::mutex floor_mutex_;
-  std::array<float, 4> remembered_floor_ = {};
+  RememberedFloor remembered_floor_;
 
   mutable std::mutex snapshot_mutex_;
   NuiSkeletonSnapshot snapshot_;

@@ -241,6 +241,10 @@ constexpr uint32_t kMessageBlockBytes = 0x4000;
 constexpr uint32_t kStatusBytes = 104;
 constexpr size_t kStatusFlagsWord = 1;
 constexpr size_t kStatusAccelerometerWord = 4;
+// Words 9 to 11 and 12 to 14 are the accelerometer through two stages of
+// filtering.
+constexpr size_t kStatusFilteredWord = 9;
+constexpr size_t kStatusGravityWord = 12;
 constexpr size_t kStatusTiltAngleWord = 7;
 constexpr unsigned int kMotorTimeoutMs = 250;
 // Microphone stream, from libfreenect's src/audio.c.
@@ -353,6 +357,8 @@ class UsbAudioLibusb : public UsbAudio {
     for (size_t i = 0; i < 3; ++i) {
       state.accelerometer[i] =
           int16_t(words[kStatusAccelerometerWord + i] & 0xFFFF);
+      state.filtered[i] = int16_t(words[kStatusFilteredWord + i] & 0xFFFF);
+      state.gravity[i] = int16_t(words[kStatusGravityWord + i] & 0xFFFF);
     }
     state.tilt_angle = int8_t(words[kStatusTiltAngleWord] & 0xFF);
     state.flags = words[kStatusFlagsWord];

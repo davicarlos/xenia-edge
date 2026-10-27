@@ -639,21 +639,53 @@ static bool HasTiltController() {
 }
 
 // The status titles read: 'XtSs', 0x50 bytes, built from the motor's 0x48
-// byte block (0x816FAA60). ElevationGetAngle takes the angle from the
-// gravity's Y and Z (0x816FAF68).
+// byte block and the floor the title remembered (0x816FAA60).
+// ElevationGetAngle takes the angle from the gravity's Y and Z (0x816FAF68).
+// With a floor remembered, xam also turns the three accelerometer readings
+// by the angle between that floor's normal and the gravity of the time; the
+// two agree within a degree or so, and that turn is left out here.
 constexpr uint32_t kTiltStatusSignature = 0x58745373;  // 'XtSs'
+constexpr double kOneG = 819.0;  // Accelerometer counts.
 
 struct X_NUI_TILT_STATUS {
   xe::be<uint32_t> size;
   xe::be<uint32_t> signature;
-  xe::be<uint32_t> unknown_08[6];
-  // In the accelerometer's counts, about 819 for 1 g.
+  // The accelerometer raw and through the firmware's two filters, in its
+  // counts; the last is gravity.
+  xe::be<int32_t> accelerometer[3];
+  xe::be<int32_t> filtered[3];
   xe::be<int32_t> gravity[3];
-  // Bits 0 and 1: the motor is moving.
+  // Bits 0 and 1: the motor is moving. 0x10: the floor was forgotten after
+  // a motor event, until a title remembers one with reset set.
   xe::be<uint32_t> motor_state;
-  xe::be<uint32_t> unknown_30[8];
+  xe::be<uint32_t> unknown_30[2];
+  // The floor plane's normal Z and distance as the title remembered them;
+  // titles take a distance of 0 for no floor (4D5308ED's tilt search).
+  xe::be<float> floor_normal_z;
+  xe::be<float> floor_distance;
+  xe::be<uint32_t> unknown_40;
+  // Gravity when the floor was remembered, in counts.
+  xe::be<int32_t> floor_gravity[3];
 };
 static_assert_size(X_NUI_TILT_STATUS, 0x50);
+constexpr uint32_t kTiltFloorInvalid = 0x10;
+constexpr uint32_t kMotorEventFlag = 0x4;
+
+// The motor's readings; without the motor, a camera that doesn't move, at
+// the angle last set.
+static bool ReadTilt(NUIController* nui, hid::kinect::UsbAudio::State& motor) {
+  if (nui->device()->ReadMotorState(motor)) {
+    return true;
+  }
+  motor = {};
+  const double angle = nui->GetElevationAngle() * M_PI / 180.0;
+  motor.gravity[1] = int16_t(std::lround(kOneG * std::cos(angle)));
+  motor.gravity[2] = int16_t(std::lround(kOneG * std::sin(angle)));
+  for (size_t i = 0; i < 3; ++i) {
+    motor.accelerometer[i] = motor.filtered[i] = motor.gravity[i];
+  }
+  return false;
+}
 
 dword_result_t XamNuiCameraTiltGetStatus_entry(
     pointer_t<X_NUI_TILT_STATUS> status) {
@@ -669,17 +701,27 @@ dword_result_t XamNuiCameraTiltGetStatus_entry(
   status->signature = kTiltStatusSignature;
   NUIController* nui = kernel_state()->nui();
   hid::kinect::UsbAudio::State motor;
-  if (nui->device()->ReadMotorState(motor)) {
-    for (size_t i = 0; i < 3; ++i) {
-      status->gravity[i] = motor.accelerometer[i];
-    }
-    status->motor_state = motor.flags & 3;
-  } else {
-    // A camera that doesn't move, at the angle last set.
-    constexpr double kOneG = 819.0;
-    const double angle = nui->GetElevationAngle() * M_PI / 180.0;
-    status->gravity[1] = int32_t(std::lround(kOneG * std::cos(angle)));
-    status->gravity[2] = int32_t(std::lround(kOneG * std::sin(angle)));
+  ReadTilt(nui, motor);
+  for (size_t i = 0; i < 3; ++i) {
+    status->accelerometer[i] = motor.accelerometer[i];
+    status->filtered[i] = motor.filtered[i];
+    status->gravity[i] = motor.gravity[i];
+  }
+  uint32_t motor_state = motor.flags & 3;
+  // The kernel turns the firmware's recent event bit (0x4, not the motor's
+  // own movement) into the bit that makes xam forget the floor.
+  if (motor.flags & kMotorEventFlag) {
+    nui->ForgetFloor();
+  }
+  const NUIController::RememberedFloor floor = nui->GetRememberedFloor();
+  if (floor.invalid) {
+    motor_state |= kTiltFloorInvalid;
+  }
+  status->motor_state = motor_state;
+  status->floor_normal_z = floor.plane[2];
+  status->floor_distance = floor.plane[3];
+  for (size_t i = 0; i < 3; ++i) {
+    status->floor_gravity[i] = int32_t(floor.gravity[i] * kOneG);
   }
   return kNuiNtSuccess;
 }
@@ -739,7 +781,8 @@ dword_result_t XamNuiCameraElevationStopMovement_entry() {
 DECLARE_XAM_EXPORT1(XamNuiCameraElevationStopMovement, kNone, kImplemented);
 
 // The floor plane the title found (0x816FA618), by value: two floats in each
-// register. 4D53090F sends it about 25 times a second.
+// register, with the gravity of the moment (normalized, 0x816FA478); reset
+// clears the floor's invalid mark. 4D53090F sends it about 25 times a second.
 dword_result_t XamNuiCameraRememberFloor_entry(qword_t normal_xy,
                                                qword_t normal_z_distance,
                                                dword_t reset) {
@@ -752,9 +795,23 @@ dword_result_t XamNuiCameraRememberFloor_entry(qword_t normal_xy,
   auto low = [](uint64_t v) {
     return xe::memory::Reinterpret<float>(uint32_t(v));
   };
-  kernel_state()->nui()->SetRememberedFloor(
-      {high(normal_xy), low(normal_xy), high(normal_z_distance),
-       low(normal_z_distance)});
+  NUIController* nui = kernel_state()->nui();
+  hid::kinect::UsbAudio::State motor;
+  ReadTilt(nui, motor);
+  std::array<float, 3> gravity = {float(motor.gravity[0]),
+                                  float(motor.gravity[1]),
+                                  float(motor.gravity[2])};
+  const float length = std::sqrt(gravity[0] * gravity[0] +
+                                 gravity[1] * gravity[1] +
+                                 gravity[2] * gravity[2]);
+  if (length > 0) {
+    for (float& g : gravity) {
+      g /= length;
+    }
+  }
+  nui->SetRememberedFloor({high(normal_xy), low(normal_xy),
+                           high(normal_z_distance), low(normal_z_distance)},
+                          gravity, reset != 0);
   return kNuiNtSuccess;
 }
 DECLARE_XAM_EXPORT2(XamNuiCameraRememberFloor, kNone, kImplemented,

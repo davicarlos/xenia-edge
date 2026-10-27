@@ -170,14 +170,26 @@ bool NUIController::StopElevation() {
   return device()->StopTilt();
 }
 
-std::array<float, 4> NUIController::GetRememberedFloor() const {
+NUIController::RememberedFloor NUIController::GetRememberedFloor() const {
   std::lock_guard<std::mutex> lock(floor_mutex_);
   return remembered_floor_;
 }
 
-void NUIController::SetRememberedFloor(const std::array<float, 4>& plane) {
+void NUIController::SetRememberedFloor(const std::array<float, 4>& plane,
+                                       const std::array<float, 3>& gravity,
+                                       bool reset) {
   std::lock_guard<std::mutex> lock(floor_mutex_);
-  remembered_floor_ = plane;
+  remembered_floor_.plane = plane;
+  remembered_floor_.gravity = gravity;
+  if (reset) {
+    remembered_floor_.invalid = false;
+  }
+}
+
+void NUIController::ForgetFloor() {
+  std::lock_guard<std::mutex> lock(floor_mutex_);
+  remembered_floor_ = {};
+  remembered_floor_.invalid = true;
 }
 
 namespace {

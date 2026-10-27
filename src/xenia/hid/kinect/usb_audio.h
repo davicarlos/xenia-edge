@@ -36,6 +36,11 @@ class UsbAudio {
   struct State {
     // Raw accelerometer counts; about 819 per g.
     int16_t accelerometer[3];
+    // The accelerometer through the firmware's two stages of filtering; the
+    // second is the gravity xam reports. The raw counts jitter by a couple
+    // of degrees at rest, which titles take for the sensor being moved.
+    int16_t filtered[3];
+    int16_t gravity[3];
     // Degrees from horizontal, as the motor reports it.
     int8_t tilt_angle;
     // Motor status flags from the firmware's status block.

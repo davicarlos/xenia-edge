@@ -338,8 +338,8 @@ void KinectTunerUI::OnDraw(ImGuiIO& io) {
   hid::kinect::UsbAudio::State tilt;
   if (kernel_state()->nui()->device()->ReadMotorState(tilt)) {
     // Gravity from the accelerometer gives the sensor's real elevation.
-    const float angle = std::atan2(float(tilt.accelerometer[2]),
-                                   float(tilt.accelerometer[1])) *
+    const float angle = std::atan2(float(tilt.gravity[2]),
+                                   float(tilt.gravity[1])) *
                         180.0f / 3.14159265f;
     ImGui::Text("Sensor elevation: %+.0f degrees%s", angle,
                 tilt.flags & 3 ? " (moving)" : "");
