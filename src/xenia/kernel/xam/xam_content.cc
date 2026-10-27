@@ -1130,6 +1130,59 @@ dword_result_t XamContentGetDeviceVolumePath_entry(dword_t device_id,
   return X_ERROR_SUCCESS;
 }
 DECLARE_XAM_EXPORT1(XamContentGetDeviceVolumePath, kContent, kStub);
+
+// --- The system cache partition ----------------------------------------------
+// There is no cache partition here, so the cache is always empty. The Kinect
+// titles' NUI runtime (4D53090F, 4D5308C9, 4D5308ED, 4D53093B) only opens the
+// identity files it holds, resets the type 0x18 cache and closes them again.
+
+struct X_XCACHE_FILE {
+  // Bit 0: create the file instead of opening an existing one.
+  xe::be<uint32_t> flags;
+  xe::be<uint32_t> type;
+  xe::be<uint32_t> key_low;
+  xe::be<uint32_t> unknown_0C;
+  xe::be<uint64_t> key;
+  xe::be<uint64_t> version;
+  xe::be<uint32_t> size;
+  xe::be<uint32_t> handle;
+  char path[8];
+};
+static_assert_size(X_XCACHE_FILE, 0x30);
+
+// The cache types the system knows (0x81675BD0).
+static bool IsCacheType(uint32_t type) {
+  return (type >= 0x1 && type <= 0x3) || type == 0x5 ||
+         (type >= 0x7 && type <= 0x9) || (type >= 0xB && type <= 0x10) ||
+         (type >= 0x12 && type <= 0x21);
+}
+
+// 0x816794A0: a Win32 error; 2 when the file isn't cached, 0xF when no
+// partition can take a new one.
+dword_result_t XamCacheOpenFile_entry(pointer_t<X_XCACHE_FILE> file) {
+  if (!file || !IsCacheType(file->type)) {
+    return X_ERROR_INVALID_PARAMETER;
+  }
+  file->handle = X_INVALID_HANDLE_VALUE;
+  file->path[0] = '\0';
+  constexpr X_RESULT kErrorInvalidDrive = X_RESULT_FROM_WIN32(0x0000000FL);
+  return (file->flags & 1) ? kErrorInvalidDrive : X_ERROR_FILE_NOT_FOUND;
+}
+DECLARE_XAM_EXPORT1(XamCacheOpenFile, kContent, kSketchy);
+
+// 0x816794D0
+void XamCacheCloseFile_entry(pointer_t<X_XCACHE_FILE> file, dword_t remove) {
+  if (file) {
+    file->handle = X_INVALID_HANDLE_VALUE;
+  }
+}
+DECLARE_XAM_EXPORT1(XamCacheCloseFile, kContent, kSketchy);
+
+// 0x816794E8: deletes the files of a type (0 for all) that aren't open.
+dword_result_t XamCacheReset_entry(dword_t type) {
+  return type == 0 || IsCacheType(type);
+}
+DECLARE_XAM_EXPORT1(XamCacheReset, kContent, kSketchy);
 }  // namespace xam
 }  // namespace kernel
 }  // namespace xe
