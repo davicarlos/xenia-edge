@@ -17,8 +17,10 @@
 // each profile with xam (0x2A007, 0x2A008) and with the profile
 // (XamRead/WriteBiometricData).
 
+#include <chrono>
 #include <cstring>
 
+#include "xenia/base/cvar.h"
 #include "xenia/base/logging.h"
 #include "xenia/cpu/processor.h"
 #include "xenia/kernel/kernel_state.h"
@@ -28,6 +30,13 @@
 #include "xenia/kernel/xam/xam_private.h"
 #include "xenia/kernel/xthread.h"
 #include "xenia/xbox.h"
+
+DEFINE_bool(kinect_log_hands, false,
+            "Log every skeleton frame the title's runtime publishes: each "
+            "skeleton's state and its hands and shoulder center, with the "
+            "time since the last frame. Titles' hand cursors (4D53093B) only "
+            "follow a fully tracked skeleton.",
+            "HID");
 
 namespace xe {
 namespace kernel {
@@ -236,6 +245,41 @@ T* Guest(uint32_t address) {
   return memory()->TranslateVirtual<T*>(address);
 }
 
+// kinect_log_hands: a line a frame. Joint states are 0 not tracked, 1
+// inferred, 2 tracked; the shoulder center is what 4D53093B's cursor measures
+// the hands from (0x826ADB70).
+void LogHands(const NuiSkeletonSnapshot& snapshot) {
+  constexpr uint32_t kShoulderCenter = 2, kHandLeft = 7, kHandRight = 11;
+  static auto last = std::chrono::steady_clock::now();
+  const auto now = std::chrono::steady_clock::now();
+  const double interval_ms =
+      std::chrono::duration<double, std::milli>(now - last).count();
+  last = now;
+  bool anyone = false;
+  for (uint32_t i = 0; i < NuiSkeletonSnapshot::kSkeletonCount; ++i) {
+    const auto& s = snapshot.skeletons[i];
+    if (s.state == NuiSkeletonSnapshot::TrackingState::kNotTracked) {
+      continue;
+    }
+    anyone = true;
+    const auto& l = s.joints[kHandLeft];
+    const auto& r = s.joints[kHandRight];
+    const auto& c = s.joints[kShoulderCenter];
+    XELOGI(
+        "Kinect hands: frame {} +{:.0f} ms skeleton {} state {} id {:08X} "
+        "left {} ({:.2f} {:.2f} {:.2f}) right {} ({:.2f} {:.2f} {:.2f}) "
+        "shoulders {} ({:.2f} {:.2f} {:.2f})",
+        snapshot.frame_number, interval_ms, i, uint32_t(s.state),
+        s.tracking_id, s.joint_states[kHandLeft], l[0], l[1], l[2],
+        s.joint_states[kHandRight], r[0], r[1], r[2],
+        s.joint_states[kShoulderCenter], c[0], c[1], c[2]);
+  }
+  if (!anyone) {
+    XELOGI("Kinect hands: frame {} +{:.0f} ms nobody", snapshot.frame_number,
+           interval_ms);
+  }
+}
+
 // 0x2B0xx, xam's dispatcher 0x816F9CB8 (switch on message − 0x2B001).
 X_HRESULT DispatchTitleMessage(uint32_t message, uint32_t buffer_ptr,
                                uint8_t* buffer) {
@@ -281,6 +325,9 @@ X_HRESULT DispatchTitleMessage(uint32_t message, uint32_t buffer_ptr,
         }
       }
       nui->SetSkeletonSnapshot(snapshot);
+      if (cvars::kinect_log_hands) {
+        LogHands(snapshot);
+      }
       // Now and then, whether the tracker sees anyone.
       if (snapshot.frame_number % 60 == 0) {
         uint32_t tracked = 0, position_only = 0;
