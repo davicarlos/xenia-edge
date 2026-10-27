@@ -698,7 +698,7 @@ dword_result_t XamNuiCameraElevationGetAngle_entry(lpdword_t angle,
   status->size = sizeof(X_NUI_TILT_STATUS);
   status->signature = kTiltStatusSignature;
   const X_HRESULT result = XamNuiCameraTiltGetStatus_entry(
-      pointer_t<X_NUI_TILT_STATUS>(status_ptr));
+      shim::TypedPointerParam<X_NUI_TILT_STATUS>(status));
   if (XSUCCEEDED(result)) {
     const double degrees =
         std::atan2(double(int32_t(status->gravity[2])),
