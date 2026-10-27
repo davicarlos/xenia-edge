@@ -260,6 +260,10 @@ dword_result_t LDIDecompress_entry(dword_t handle, lpvoid_t source,
   }
   if (!context->decoder->Decompress(source.as<const uint8_t*>(), source_size,
                                     dest.as<uint8_t*>(), frame_size)) {
+    XELOGE("LDIDecompress: frame of {:X} bytes at {:08X} (context {:08X}) "
+           "failed to inflate to {:X}",
+           uint32_t(source_size), source.guest_address(), uint32_t(handle),
+           frame_size);
     return kLdiErrorFailed;
   }
   return kLdiErrorNone;
