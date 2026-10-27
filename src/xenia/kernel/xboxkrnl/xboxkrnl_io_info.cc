@@ -106,14 +106,18 @@ dword_result_t NtQueryInformationFile_entry(
       break;
     }
     case XFileXctdCompressionInformation: {
-      XELOGE(
-          "NtQueryInformationFile(XFileXctdCompressionInformation) "
-          "unimplemented");
-      // Files that are XCTD compressed begin with the magic 0x0FF512ED but we
-      // shouldn't detect this that way. There's probably a flag somewhere
-      // (attributes?) that defines if it's compressed or not.
-      status = X_STATUS_INVALID_PARAMETER;
-      out_length = 0;
+      // Bit 0: the file is XCTD compressed. Titles' CreateFile (4D5309D6's
+      // 0x82C21A58) falls back to reading the magic 0x0FF512ED when the
+      // query fails, so the magic decides here too.
+      uint8_t magic[4] = {};
+      size_t bytes_read = 0;
+      const bool compressed =
+          XSUCCEEDED(file->file()->ReadSync(magic, 0, &bytes_read)) &&
+          bytes_read == sizeof(magic) &&
+          xe::load_and_swap<uint32_t>(magic) == 0x0FF512ED;
+      auto info = info_ptr.as<X_FILE_XCTD_COMPRESSION_INFORMATION*>();
+      info->unknown = compressed ? 1 : 0;
+      out_length = sizeof(*info);
       break;
     };
     case XFileNetworkOpenInformation: {
